@@ -358,7 +358,7 @@ def train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_nam
     batch_size, splits = data_config['batch_size'], data_config.get('splits', None)
     loaders, test_set, x_dim, edge_attr_dim, num_class, aux_info = get_data_loaders(data_dir, dataset_name, batch_size, splits, random_state, data_config.get('mutag_x', False))
 
-    model_config['deg'] = aux_info['deg']
+    model_config['deg'] = aux_info['deg'] # degree histogram
     model = get_model(x_dim, edge_attr_dim, num_class, aux_info['multi_label'], model_config, device)
     print('====================================')
     print('====================================')

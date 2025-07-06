@@ -61,9 +61,9 @@ def get_data_loaders(data_dir, dataset_name, batch_size, splits, random_state, m
         print('[INFO] Using default splits!')
 
     x_dim = test_set[0].x.shape[1]
-    edge_attr_dim = 0 if test_set[0].edge_attr is None else test_set[0].edge_attr.shape[1]
-    if isinstance(test_set, list):
-        num_class = Batch.from_data_list(test_set).y.unique().shape[0]
+    edge_attr_dim = 0 if test_set[0].edge_attr is None else test_set[0].edge_attr.shape[1] #do edge features exist
+    if isinstance(test_set, list): #if list of graphs
+        num_class = Batch.from_data_list(test_set).y.unique().shape[0] #converts to batched PyG object, extracts y labels then num unique
     elif test_set.data.y.shape[-1] == 1 or len(test_set.data.y.shape) == 1:
         num_class = test_set.data.y.unique().shape[0]
     else:
@@ -77,10 +77,10 @@ def get_data_loaders(data_dir, dataset_name, batch_size, splits, random_state, m
     #     d = degree(data.edge_index[1], num_nodes=data.num_nodes, dtype=torch.long)
     #     deg += torch.bincount(d, minlength=deg.numel())
     batched_train_set = Batch.from_data_list(train_set)
-    d = degree(batched_train_set.edge_index[1], num_nodes=batched_train_set.num_nodes, dtype=torch.long)
-    deg = torch.bincount(d, minlength=10)
+    d = degree(batched_train_set.edge_index[1], num_nodes=batched_train_set.num_nodes, dtype=torch.long) #degree
+    deg = torch.bincount(d, minlength=10) #degree higher than 10 is dropped
 
-    aux_info = {'deg': deg, 'multi_label': multi_label}
+    aux_info = {'deg': deg, 'multi_label': multi_label} #multi-label = false
     return loaders, test_set, x_dim, edge_attr_dim, num_class, aux_info
 
 

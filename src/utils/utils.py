@@ -149,7 +149,15 @@ def visualize_a_graph(edge_index, edge_att, node_label, dataset_name, coor=None,
         nx.draw_networkx_edges(G, pos, width=1, edge_color='gray', arrows=False, alpha=0.1, ax=ax, connectionstyle='arc3,rad=0.4')
 
     fig = plt.gcf()
-    fig.canvas.draw()
-    image = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-    image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+    #fig.canvas.draw() #MANGO
+    #image = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8) #MANGO
+    #image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,)) #MANGO
+
+    fig.canvas.draw() #MANGO
+    renderer = fig.canvas.get_renderer() #MANGO
+    width, height = renderer.width, renderer.height #MANGO
+
+    image = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8) #MANGO
+    image = image.reshape((int(height), int(width), 3)) #MANGO
+
     return fig, image

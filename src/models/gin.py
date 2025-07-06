@@ -22,7 +22,7 @@ class GIN(nn.Module):
         if model_config.get('atom_encoder', False):
             self.node_encoder = AtomEncoder(emb_dim=hidden_size)
             if edge_attr_dim != 0 and self.use_edge_attr:
-                self.edge_encoder = BondEncoder(emb_dim=hidden_size)
+                self.edge_encoder = BondEncoder(emb_dim=hidden_size) #IS THIS USING EDGES?
         else:
             self.node_encoder = Linear(x_dim, hidden_size)
             if edge_attr_dim != 0 and self.use_edge_attr:
