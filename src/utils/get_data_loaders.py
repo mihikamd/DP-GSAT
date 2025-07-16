@@ -5,7 +5,7 @@ from torch_geometric.utils import degree
 from torch_geometric.loader import DataLoader
 
 from ogb.graphproppred import PygGraphPropPredDataset
-from datasets import SynGraphDataset, Mutag, SPMotif, MNIST75sp, graph_sst2
+from datasets import SynGraphDataset, Mutag, SPMotif, MNIST75sp, graph_sst2, Mutag_Dual
 
 #from trainer import run_one_epoch, update_best_epoch_res, get_viz_idx, visualize_results # MANGO
 
@@ -18,7 +18,7 @@ from rdkit import Chem #MANGO
 
 def get_data_loaders(data_dir, dataset_name, batch_size, splits, random_state, mutag_x=False):
     multi_label = False
-    assert dataset_name in ['ba_2motifs', 'mutag', 'Graph-SST2', 'mnist',
+    assert dataset_name in ['ba_2motifs', 'mutag', 'dual_mutag', 'Graph-SST2', 'mnist',
                             'spmotif_0.5', 'spmotif_0.7', 'spmotif_0.9',
                             'ogbg_molhiv', 'ogbg_moltox21', 'ogbg_molbace',
                             'ogbg_molbbbp', 'ogbg_molclintox', 'ogbg_molsider']
@@ -34,10 +34,14 @@ def get_data_loaders(data_dir, dataset_name, batch_size, splits, random_state, m
         split_idx = get_random_split_idx(dataset, splits, mutag_x=mutag_x)
         loaders, test_set = get_loaders_and_test_set(batch_size, dataset=dataset, split_idx=split_idx)
         print("\U0001F96D HERE GOD DAMNIT IM HERE") #MANGO
-        num_viz_samples = 10 #MANGO
-        #simple_visualize(test_set,dataset_name) #MANGO
-        print("\U0001F96D HERE GOD DAMNIT IM HERE NOW") #MANGO
         train_set = dataset[split_idx['train']]
+
+    elif dataset_name == 'dual_mutag':
+        dataset = Mutag_Dual(root=data_dir / 'mutag_dual') #MANGO
+        split_idx = get_random_split_idx(dataset, splits, mutag_x=mutag_x)
+        loaders, test_set = get_loaders_and_test_set(batch_size, dataset=dataset, split_idx=split_idx) #MANGO
+        print("\U0001F96D HERE GOD DAMNIT IM HERE NOW") #MANGO
+        train_set = dataset[split_idx['train']] #MANGO
 
     elif 'ogbg' in dataset_name:
         dataset = PygGraphPropPredDataset(root=data_dir, name='-'.join(dataset_name.split('_')))

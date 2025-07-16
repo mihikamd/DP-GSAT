@@ -16,6 +16,10 @@ from ogb.graphproppred import Evaluator
 from sklearn.metrics import roc_auc_score
 from rdkit import Chem
 
+import torch.nn.functional as F
+
+from utils import NSALoss, LNSA_loss
+
 from pretrain_clf import train_clf_one_seed
 from utils import Writer, Criterion, MLP, visualize_a_graph, save_checkpoint, load_checkpoint, get_preds, get_lr, set_seed, process_data
 from utils import get_local_config_name, get_model, get_data_loaders, write_stat_from_metric_dicts, reorder_like, init_metric_dict
@@ -96,7 +100,7 @@ class GSAT(nn.Module):
         att, loss, loss_dict, clf_logits = self.forward_pass(data, epoch, training=False)
         return att.data.cpu().reshape(-1), loss_dict, clf_logits.data.cpu()
 
-    def train_one_batch(self, data, epoch):
+    def train_one_batch(self, data, epoch): #implement dual primal in forward pass or in GNN Layer
         self.extractor.train()
         self.clf.train()
 
@@ -141,11 +145,27 @@ class GSAT(nn.Module):
 
     def train(self, loaders, test_set, metric_dict, use_edge_attr):
         viz_set = self.get_viz_idx(test_set, self.dataset_name)
+        graph_embeds = []
         for epoch in range(self.epochs):
             train_res = self.run_one_epoch(loaders['train'], epoch, 'train', use_edge_attr)
             valid_res = self.run_one_epoch(loaders['valid'], epoch, 'valid', use_edge_attr)
             test_res = self.run_one_epoch(loaders['test'], epoch, 'test', use_edge_attr)
             self.writer.add_scalar('gsat_train/lr', get_lr(self.optimizer), epoch)
+
+            # MANGO BELOW
+            self.clf.eval()
+            graph_embeds_epoch = []
+
+            for data in test_set:
+                data = data.to(self.device)
+                with torch.no_grad():
+                    batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.device)
+                    graph_emb = self.clf.get_graph_emb(data.x, data.edge_index, batch, data.edge_attr)
+                graph_embeds_epoch.append(graph_emb.cpu())
+
+            graph_embeds_epoch = torch.cat(graph_embeds_epoch, dim=0) 
+            graph_embeds.append(graph_embeds_epoch)
+            #MANGO ABOVE
 
             assert len(train_res) == 5
             main_metric_idx = 3 if 'ogb' in self.dataset_name else 2  # clf_roc or clf_acc
@@ -183,7 +203,10 @@ class GSAT(nn.Module):
                   f'Best Test X AUROC: {metric_dict["metric/best_x_roc_test"]:.3f}')
             print('====================================')
             print('====================================')
-        return metric_dict
+    
+        graph_embeds_epoch = torch.cat(graph_embeds, dim=0) 
+
+        return metric_dict, graph_embeds
 
     def log_epoch(self, epoch, phase, loss_dict, exp_labels, att, precision_at_k, clf_labels, clf_logits, batch):
         desc = f'[Seed {self.random_state}, Epoch: {epoch}]: gsat_{phase}........., ' if batch else f'[Seed {self.random_state}, Epoch: {epoch}]: gsat_{phase} finished, '
@@ -348,6 +371,12 @@ def train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_nam
 
     set_seed(random_state)
 
+    #DUAL
+    dual_log_dir = log_dir / 'DUAL'
+    dual_data_dir = data_dir / '_dual'
+    dual_dataset_name = dataset_name + "_dual"
+    #DUAL
+
     model_config = local_config['model_config']
     data_config = local_config['data_config']
     method_config = local_config[f'{method_name}_config']
@@ -355,11 +384,30 @@ def train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_nam
     assert model_config['model_name'] == model_name
     assert method_config['method_name'] == method_name
 
+    #DUAL
+    dual_model_config = local_config['model_config']
+    dual_data_config = local_config['data_config']
+    dual_method_config = local_config[f'{method_name}_config']
+    dual_shared_config = local_config['shared_config']
+    assert dual_model_config['model_name'] == model_name
+    assert dual_method_config['method_name'] == method_name
+    #DUAL
+
     batch_size, splits = data_config['batch_size'], data_config.get('splits', None)
     loaders, test_set, x_dim, edge_attr_dim, num_class, aux_info = get_data_loaders(data_dir, dataset_name, batch_size, splits, random_state, data_config.get('mutag_x', False))
 
+    #DUAL
+    dual_loaders, dual_test_set, dual_x_dim, dual_edge_attr_dim, dual_num_class, dual_aux_info = get_data_loaders(data_dir, 'dual_mutag', batch_size, splits, random_state, data_config.get('mutag_x', False))
+    #DUAL
+
     model_config['deg'] = aux_info['deg'] # degree histogram
     model = get_model(x_dim, edge_attr_dim, num_class, aux_info['multi_label'], model_config, device)
+
+    #DUAL
+    dual_model_config['deg'] = dual_aux_info['deg']
+    dual_model = get_model(dual_x_dim, dual_edge_attr_dim, dual_num_class, dual_aux_info['multi_label'], dual_model_config, device)
+    #DUAL
+
     print('====================================')
     print('====================================')
 
@@ -372,6 +420,18 @@ def train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_nam
         load_checkpoint(model, model_dir=log_dir, model_name=f'epoch_{pretrain_epochs}')
     else:
         print('[INFO] Training both the model and the attention from scratch...')
+
+    #DUAL
+    dual_log_dir.mkdir(parents=True, exist_ok=True)
+    if not dual_method_config['from_scratch']:
+        print('[DUAL INFO] Pretraining the model...')
+        train_clf_one_seed(local_config, dual_data_dir, dual_log_dir, model_name, dual_dataset_name, device, random_state,
+                           model=dual_model, loaders=dual_loaders, num_class=dual_num_class, aux_info=dual_aux_info)
+        pretrain_epochs = local_config['model_config']['pretrain_epochs'] - 1
+        load_checkpoint(dual_model, model_dir=dual_log_dir, model_name=f'epoch_{pretrain_epochs}_dual')
+    else:
+        print('[DUAL INFO] Training both the model and the attention from scratch...')
+    #DUAL
 
     extractor = ExtractorMLP(model_config['hidden_size'], shared_config).to(device)
     lr, wd = method_config['lr'], method_config.get('weight_decay', 0)
@@ -389,7 +449,260 @@ def train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_nam
     print('====================================')
     print('[INFO] Training GSAT...')
     gsat = GSAT(model, extractor, optimizer, scheduler, writer, device, log_dir, dataset_name, num_class, aux_info['multi_label'], random_state, method_config, shared_config)
-    metric_dict = gsat.train(loaders, test_set, metric_dict, model_config.get('use_edge_attr', True))
+    metric_dict, primal_graph_embeddings = gsat.train(loaders, test_set, metric_dict, model_config.get('use_edge_attr', True))
+
+    #DUAL
+    dual_extractor = ExtractorMLP(dual_model_config['hidden_size'], dual_shared_config).to(device)
+    dual_lr, dual_wd = dual_method_config['lr'], dual_method_config.get('weight_decay', 0)
+    dual_optimizer = torch.optim.Adam(list(dual_extractor.parameters()) + list(dual_model.parameters()), lr=dual_lr, weight_decay=dual_wd)
+
+    dual_scheduler_config = dual_method_config.get('scheduler', {})
+    dual_scheduler = None if dual_scheduler_config == {} else ReduceLROnPlateau(dual_optimizer, mode='max', **dual_scheduler_config)
+
+    dual_writer = Writer(log_dir=dual_log_dir)
+    dual_hparam_dict = {**dual_model_config, **dual_data_config}
+    dual_hparam_dict = {k: str(v) if isinstance(v, (dict, list)) else v for k, v in dual_hparam_dict.items()}
+    dual_metric_dict = deepcopy(init_metric_dict)
+    dual_writer.add_hparams(hparam_dict=dual_hparam_dict, metric_dict=dual_metric_dict)
+
+    print('====================================')
+    print('[DUAL INFO] Training GSAT...')
+    dual_gsat = GSAT(dual_model, dual_extractor, dual_optimizer, dual_scheduler, dual_writer, device, dual_log_dir, dual_dataset_name, dual_num_class, dual_aux_info['multi_label'], random_state, dual_method_config, dual_shared_config)
+    dual_metric_dict, dual_graph_embeddings = dual_gsat.train(dual_loaders, dual_test_set, dual_metric_dict, dual_model_config.get('use_edge_attr', True))
+
+    #DUAL
+
+    # #MANGO BELOW
+    # # #question is this all projected into the same latent space; i should be using the primal graph training for embeddings right
+    # model.eval()
+    # dual_model.eval()
+
+    # primal_graph_embeddings = []
+
+    # for data in test_set:
+    #     data = data.to(device)
+    #     with torch.no_grad():
+    #         #emb = model.get_emb(data.x, data.edge_index, data.batch, data.edge_attr)
+    #         # if data.batch is None:
+    #         #     batch = torch.zeros(emb.size(0), dtype=torch.long, device=emb.device)
+    #         # else:
+    #         #     batch = data.batch
+    #         batch = torch.zeros(data.x.size(0), dtype=torch.long, device=device)
+    #         graph_emb = model.get_graph_emb(data.x, data.edge_index, batch, data.edge_attr)
+    #         #graph_emb = model.get_pred_from_emb(emb, batch)
+    #         #graph_emb = global_mean_pool(emb, batch)
+    #     primal_graph_embeddings.append(graph_emb.cpu())
+
+    # dual_graph_embeddings = []
+    # for dual_data in dual_test_set:
+    #     dual_data = dual_data.to(device)
+    #     with torch.no_grad():
+    #         batch = torch.zeros(dual_data.x.size(0), dtype=torch.long, device=device)
+    #         # dual_emb = dual_model.get_emb(dual_data.x, dual_data.edge_index, dual_data.batch, dual_data.edge_attr)
+    #         # if dual_data.batch is None:
+    #         #     dual_batch = torch.zeros(dual_emb.size(0), dtype=torch.long, device=dual_emb.device)
+    #         # else:
+    #         #     batch = dual_data.batch
+    #         #dual_graph_emb = dual_model.get_pred_from_emb(dual_emb, dual_batch)
+    #         dual_graph_emb = dual_model.get_graph_emb(dual_data.x, dual_data.edge_index, batch, dual_data.edge_attr)
+    #         # dual_graph_emb = global_mean_pool(dual_emb, batch)
+    #     dual_graph_embeddings.append(dual_graph_emb.cpu())
+
+    print('\U0001F96D len(primal_graph_embeddings)', len(primal_graph_embeddings))
+    print('\U0001F96D len(dual_graph_embeddings)', len(dual_graph_embeddings))
+
+    # primal_graph_embeddings = torch.cat(primal_graph_embeddings) 
+    # dual_graph_embeddings = torch.cat(dual_graph_embeddings)
+    # print('\U0001F96D primal_graph_embeddings.shape', primal_graph_embeddings.shape)
+    # print('\U0001F96D dual_graph_embeddings.shape', dual_graph_embeddings.shape)
+
+    local_nsa = LNSA_loss()
+    global_nsa = NSALoss()
+
+    from sklearn.decomposition import PCA
+    from sklearn.manifold import TSNE
+    import matplotlib.pyplot as plt
+
+    def safe_reduce(emb):
+        emb = emb.copy()
+        emb = np.clip(emb, -100, 100)  # Reduce instability
+        emb -= np.mean(emb, axis=0)
+        emb /= (np.std(emb, axis=0) + 1e-6)
+        try:
+            reducer = PCA(n_components=2, svd_solver='full')
+            return reducer.fit_transform(emb)
+        except Exception as e:
+            print("PCA failed, using t-SNE instead:", e)
+            reducer = TSNE(n_components=2, perplexity=30, init="random", random_state=42)
+            return reducer.fit_transform(emb)
+
+    from sklearn.manifold import TSNE
+
+    for i in range(model_config['pretrain_epochs']):
+        print(f"\U0001F96D ========== epoch{i} =========")
+
+        # NSA values
+        g_nsa = global_nsa(primal_graph_embeddings[i], dual_graph_embeddings[i])
+        l_nsa = local_nsa(primal_graph_embeddings[i], dual_graph_embeddings[i])
+        nsa = g_nsa + l_nsa
+
+        print("\U0001F96D global_nsa:", g_nsa)
+        print("\U0001F96D local_nsa:", l_nsa)
+        print("\U0001F96D nsa:", nsa)
+
+        # ---- t-SNE Visualization ----
+        p_np = primal_graph_embeddings[i].detach().cpu().numpy()
+        d_np = dual_graph_embeddings[i].detach().cpu().numpy()
+
+        all_embeddings = np.vstack([p_np, d_np])
+        labels = np.array(['Primal'] * len(p_np) + ['Dual'] * len(d_np))
+
+        # t-SNE projection
+        tsne = TSNE(n_components=2, perplexity=30, init='random', random_state=42)
+        emb_2d = tsne.fit_transform(all_embeddings)
+
+        plt.figure(figsize=(8, 6))
+
+        # Draw lines connecting matching primal/dual embeddings
+        for j in range(len(p_np)):
+            p = emb_2d[j]
+            d = emb_2d[j + len(p_np)]
+            plt.plot([p[0], d[0]], [p[1], d[1]], color='gray', linewidth=0.5, alpha=0.4)
+
+        # Scatter points
+        plt.scatter(emb_2d[:len(p_np), 0], emb_2d[:len(p_np), 1], label='Primal', alpha=0.8)
+        plt.scatter(emb_2d[len(p_np):, 0], emb_2d[len(p_np):, 1], label='Dual', alpha=0.8)
+
+        plt.title(f"t-SNE: Primal vs Dual Embeddings (Epoch {i})")
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+
+        # input("continue to pca")
+        
+        # pca = PCA(n_components=2)
+        # emb_2d_pca = pca.fit_transform(all_embeddings)
+
+        # plt.figure(figsize=(8, 6))
+
+        # for j in range(len(p_np)):
+        #     p = emb_2d_pca[j]
+        #     d = emb_2d_pca[j + len(p_np)]
+        #     plt.plot([p[0], d[0]], [p[1], d[1]], color='gray', linewidth=0.5, alpha=0.4)
+
+        # plt.scatter(emb_2d_pca[:len(p_np), 0], emb_2d_pca[:len(p_np), 1], label='Primal', alpha=0.8)
+        # plt.scatter(emb_2d_pca[len(p_np):, 0], emb_2d_pca[len(p_np):, 1], label='Dual', alpha=0.8)
+
+        # plt.title(f"PCA: Primal vs Dual Embeddings (Epoch {i})")
+        # plt.legend()
+        # plt.tight_layout()
+        # plt.show()
+
+        
+        input("Continue to next epoch...")
+
+
+        # # Convert embeddings
+        # p_emb = primal_graph_embeddings[i]
+        # d_emb = dual_graph_embeddings[i]
+
+        # if isinstance(p_emb, list):
+        #     p_emb = torch.stack(p_emb)
+        # if isinstance(d_emb, list):
+        #     d_emb = torch.stack(d_emb)
+
+        # p_np = p_emb.detach().cpu().numpy()
+        # d_np = d_emb.detach().cpu().numpy()
+
+        # assert p_np.shape == d_np.shape, f"Shape mismatch: {p_np.shape} vs {d_np.shape}"
+
+        # # Reduce and visualize
+        # all_embeddings = np.vstack([p_np, d_np])
+        # emb_2d = safe_reduce(all_embeddings)
+
+        # plt.figure(figsize=(8, 6))
+        # for j in range(len(p_np)):
+        #     p = emb_2d[j]
+        #     d = emb_2d[j + len(p_np)]
+        #     plt.plot([p[0], d[0]], [p[1], d[1]], color='gray', linewidth=0.5, alpha=0.4)
+
+        # plt.scatter(emb_2d[:len(p_np), 0], emb_2d[:len(p_np), 1], label='Primal', alpha=0.8)
+        # plt.scatter(emb_2d[len(p_np):, 0], emb_2d[len(p_np):, 1], label='Dual', alpha=0.8)
+
+        # plt.title(f"Epoch {i}: Primal vs Dual Embeddings")
+        # plt.legend()
+        # plt.tight_layout()
+        # plt.savefig(f"pca_epoch_{i}.png")  # save instead of show to avoid hanging
+        # plt.close()
+
+        input("continue nsa")
+
+
+        # if isinstance(primal_graph_embeddings, list):
+        #     primal_graph_embeddings = torch.cat(primal_graph_embeddings)
+        # if isinstance(dual_graph_embeddings, list):
+        #     dual_graph_embeddings = torch.cat(dual_graph_embeddings)
+
+        # norm_nsa = global_nsa(F.normalize(primal_graph_embeddings, p=2, dim=1), F.normalize(dual_graph_embeddings, p=2, dim=1)) + local_nsa(F.normalize(primal_graph_embeddings, p=2, dim=1), F.normalize(dual_graph_embeddings, p=2, dim=1))
+        # print("\U0001F96D norm nsa:", norm_nsa)
+        # input("continue norm nsa")
+
+        # N, D = 435, 64
+
+        # real_mean = primal_graph_embeddings.mean()
+        # real_std = primal_graph_embeddings.std()
+
+        # rand1_graph_embeddings = torch.randn(N, D) * real_std + real_mean
+        # rand2_graph_embeddings = torch.randn(N, D) * real_std + real_mean
+
+        # nsa_score = global_nsa(rand1_graph_embeddings, rand2_graph_embeddings) + local_nsa(rand1_graph_embeddings, rand2_graph_embeddings)
+        # print(f"NSA loss with rand embeddings:", nsa_score)
+        # input('continue rand emb')
+
+        # import random
+        # import time
+
+        # seed = int(time.time())
+        # torch.manual_seed(seed)
+        # random.seed(seed)
+
+        # N = primal_graph_embeddings.size(0)
+        # perm = torch.randperm(N)
+        # shuffled_dual_embeddings = dual_graph_embeddings[perm]
+        # nsa_shuffled = global_nsa(primal_graph_embeddings, shuffled_dual_embeddings) + local_nsa(primal_graph_embeddings, shuffled_dual_embeddings)
+        # print(f"NSA loss with shuffled dual embeddings:",  nsa_shuffled)
+        # input('continue shuffled emb')
+
+        
+
+        # N = primal_graph_embeddings.size(0)
+        # perm = torch.randperm(N)
+        # shuffled_primal_embeddings = primal_graph_embeddings[perm]
+        # nsa_shuffled_same = global_nsa(primal_graph_embeddings, shuffled_primal_embeddings) + local_nsa(primal_graph_embeddings, shuffled_primal_embeddings)
+        # print(f"NSA loss with shuffled same embeddings:", nsa_shuffled_same)
+        # input('continue shuffled same emb')
+
+        # norm_nsa = global_nsa(F.normalize(primal_graph_embeddings, p=2, dim=1), F.normalize(shuffled_primal_embeddings, p=2, dim=1)) + local_nsa(F.normalize(primal_graph_embeddings, p=2, dim=1), F.normalize(shuffled_primal_embeddings, p=2, dim=1))
+        # print("\U0001F96D norm nsa:", norm_nsa)
+        # input("continue norm nsa")
+
+        # nsa_actually_same = global_nsa(primal_graph_embeddings, primal_graph_embeddings) + local_nsa(primal_graph_embeddings, primal_graph_embeddings)
+        # print(f"NSA actually same embeddings:", nsa_actually_same)
+        # input('continue shuffled same emb')
+
+        # N = dual_graph_embeddings.size(0)
+        # perm = torch.randperm(N)
+        # shuffled_dual_embeddings = dual_graph_embeddings[perm]
+        # nsa_shuffled_same = global_nsa(dual_graph_embeddings, shuffled_dual_embeddings) + local_nsa(dual_graph_embeddings, shuffled_dual_embeddings)
+        # print(f"NSA loss with shuffled same dual embeddings:", nsa_shuffled_same)
+        # input('continue shuffled same dual emb')
+
+        # norm_nsa = global_nsa(F.normalize(shuffled_dual_embeddings, p=2, dim=1), F.normalize(dual_graph_embeddings, p=2, dim=1)) + local_nsa(F.normalize(shuffled_dual_embeddings, p=2, dim=1), F.normalize(dual_graph_embeddings, p=2, dim=1))
+        # print("\U0001F96D norm nsa:", norm_nsa)
+        # input("continue norm nsa")
+
+    # # MANGO ABOVE
+
     writer.add_hparams(hparam_dict=hparam_dict, metric_dict=metric_dict)
     return hparam_dict, metric_dict
 

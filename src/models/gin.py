@@ -71,5 +71,10 @@ class GIN(nn.Module):
             x = F.dropout(x, p=self.dropout_p, training=self.training)
         return x
 
+    def get_graph_emb(self, x, edge_index, batch, edge_attr=None, edge_atten=None):
+        node_emb = self.get_emb(x, edge_index, batch, edge_attr, edge_atten)
+        graph_emb = self.pool(node_emb, batch)
+        return graph_emb 
+
     def get_pred_from_emb(self, emb, batch):
         return self.fc_out(self.pool(emb, batch))
