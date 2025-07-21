@@ -33,6 +33,43 @@ class GSAT(nn.Module):
         loss = pred_loss + info_loss
         loss_dict = {'loss': loss.item(), 'pred': pred_loss.item(), 'info': info_loss.item()}
         return loss, loss_dict
+    
+    # def dual_forward_pass(self, primal_data, dual_data, epoch, training):
+    #     dual_emb = self.clf.get_emb(dual_data.x, dual_data.edge_index, batch=dual_data.batch, edge_attr=dual_data.edge_attr)
+    #     dual_att_log_logits = self.extractor(dual_emb, dual_data.edge_index, dual_data.batch)
+    #     dual_att = self.sampling(dual_att_log_logits, training)
+
+    #     if self.learn_edge_att:
+    #         if is_undirected(dual_data.edge_index):
+    #             trans_idx, trans_val = transpose(dual_data.edge_index, att, None, None, coalesced=False)
+    #             trans_val_perm = reorder_like(trans_idx, dual_data.edge_index, trans_val)
+    #             edge_att = (att + trans_val_perm) / 2
+    #         else:
+    #             edge_att = att
+    #     else:
+    #         edge_att = self.lift_node_att_to_edge_att(att, dual_data.edge_index)
+
+    #     clf_logits = self.clf(dual_data.x, dual_data.edge_index, dual_data.batch, edge_attr=dual_data.edge_attr, edge_atten=edge_att)
+    #     loss, loss_dict = self.__loss__(att, clf_logits, dual_data.y, epoch)
+
+    #     emb = self.clf.get_emb(dual_data.x, dual_data.edge_index, batch=dual_data.batch, edge_attr=dual_data.edge_attr)
+    #     att_log_logits = self.extractor(emb, dual_data.edge_index, dual_data.batch)
+    #     att = self.sampling(att_log_logits, training)
+
+    #     if self.learn_edge_att:
+    #         if is_undirected(dual_data.edge_index):
+    #             trans_idx, trans_val = transpose(dual_data.edge_index, att, None, None, coalesced=False)
+    #             trans_val_perm = reorder_like(trans_idx, dual_data.edge_index, trans_val)
+    #             edge_att = (att + trans_val_perm) / 2
+    #         else:
+    #             edge_att = att
+    #     else:
+    #         edge_att = self.lift_node_att_to_edge_att(att, dual_data.edge_index)
+
+    #     clf_logits = self.clf(dual_data.x, dual_data.edge_index, dual_data.batch, edge_attr=dual_data.edge_attr, edge_atten=edge_att)
+    #     loss, loss_dict = self.__loss__(att, clf_logits, dual_data.y, epoch)
+
+    #     return edge_att, loss, loss_dict, clf_logits
 
     def forward_pass(self, data, epoch, training):
         emb = self.clf.get_emb(data.x, data.edge_index, batch=data.batch, edge_attr=data.edge_attr)
@@ -51,6 +88,7 @@ class GSAT(nn.Module):
 
         clf_logits = self.clf(data.x, data.edge_index, data.batch, edge_attr=data.edge_attr, edge_atten=edge_att)
         loss, loss_dict = self.__loss__(att, clf_logits, data.y, epoch)
+        print("GOSH DARN herere")
         return edge_att, loss, loss_dict, clf_logits
 
     @staticmethod

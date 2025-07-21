@@ -16,7 +16,7 @@ from rdkit import Chem
 class Mutag_Dual(InMemoryDataset):
     def __init__(self, root):
         super().__init__(root=root)
-        #self.process()
+        # self.process()
         self.data, self.slices = torch.load(self.processed_paths[0])
 
     @property
@@ -45,12 +45,12 @@ class Mutag_Dual(InMemoryDataset):
 
         dual_features = np.zeros((len(dual_node_label_lists), max_dual_nodes, 31))
 
-        input(f"continue {max_dual_nodes}")
+        #input(f"continue {max_dual_nodes}")
 
         # print("\U0001F96D KACHA MANGO dual_node_lists:", dual_node_lists) #MANGO
         # print("\U0001F96D KACHA MANGO len dual_node_lists:", len(dual_node_lists)) #MANGO
 
-        print(original_features[0])
+        # print(original_features[0])
 
         for gid in range(dual_features.shape[0]):
             dual_node_list = dual_node_lists[gid]
@@ -83,7 +83,7 @@ class Mutag_Dual(InMemoryDataset):
                 dual_features[gid,idx,:] = cat
                 #print("dual_features.shape: ", dual_features.shape)
                 #print("dual_features.dtype: ", dual_features.dtype)
-                print(dual_features[gid,idx,:])
+                #print(dual_features[gid,idx,:])
                 idx += 1
 
         count = 0
@@ -168,6 +168,8 @@ class Mutag_Dual(InMemoryDataset):
 
                 #except Exception as e:
                 #    print(f"Error in graph {i}: {e}")
+
+            print(f"graph {i}, {len(dual_node_lists[i])} nodes")
 
             data_list.append(Data(x=x, y=y, edge_index=edge_index, node_label=node_label, edge_label=edge_label, node_type = node_type))
 

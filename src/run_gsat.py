@@ -19,6 +19,10 @@ from rdkit import Chem
 import torch.nn.functional as F
 
 from utils import NSALoss, LNSA_loss
+from sklearn.manifold import TSNE
+
+#from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
 
 from pretrain_clf import train_clf_one_seed
 from utils import Writer, Criterion, MLP, visualize_a_graph, save_checkpoint, load_checkpoint, get_preds, get_lr, set_seed, process_data
@@ -26,59 +30,134 @@ from utils import get_local_config_name, get_model, get_data_loaders, write_stat
 
 
 class GSAT(nn.Module):
-
-    def __init__(self, clf, extractor, optimizer, scheduler, writer, device, model_dir, dataset_name, num_class, multi_label, random_state,
-                 method_config, shared_config):
+    #treat as two separate models running inside of gsat and just duplicate everything? 
+    def __init__(self, primal_clf, primal_extractor, primal_optimizer, primal_scheduler, primal_writer, primal_device, primal_model_dir, primal_dataset_name, primal_num_class, primal_multi_label, primal_random_state,
+                 primal_method_config, primal_shared_config, dual_clf, dual_extractor, dual_optimizer, dual_scheduler, dual_writer, dual_device, dual_model_dir, dual_dataset_name, dual_num_class, dual_multi_label, dual_random_state,
+                 dual_method_config, dual_shared_config):
         super().__init__()
-        self.clf = clf
-        self.extractor = extractor
-        self.optimizer = optimizer
-        self.scheduler = scheduler
+        self.primal_clf = primal_clf
+        self.primal_extractor = primal_extractor
+        self.primal_optimizer = primal_optimizer
+        self.primal_scheduler = primal_scheduler
 
-        self.writer = writer
-        self.device = device
-        self.model_dir = model_dir
-        self.dataset_name = dataset_name
-        self.random_state = random_state
-        self.method_name = method_config['method_name']
+        self.primal_writer = primal_writer
+        self.primal_device = primal_device
+        self.primal_model_dir = primal_model_dir
+        self.primal_dataset_name = primal_dataset_name
+        self.primal_random_state = primal_random_state
+        self.primal_method_name = primal_method_config['method_name']
 
-        self.learn_edge_att = shared_config['learn_edge_att']
-        self.k = shared_config['precision_k']
-        self.num_viz_samples = shared_config['num_viz_samples']
-        self.viz_interval = shared_config['viz_interval']
-        self.viz_norm_att = shared_config['viz_norm_att']
+        self.primal_learn_edge_att = primal_shared_config['learn_edge_att']
+        self.primal_k = primal_shared_config['precision_k']
+        self.primal_num_viz_samples = primal_shared_config['num_viz_samples']
+        self.primal_viz_interval = primal_shared_config['viz_interval']
+        self.primal_viz_norm_att = primal_shared_config['viz_norm_att']
 
-        self.epochs = method_config['epochs']
-        self.pred_loss_coef = method_config['pred_loss_coef']
-        self.info_loss_coef = method_config['info_loss_coef']
+        self.primal_epochs = primal_method_config['epochs']
+        self.primal_pred_loss_coef = primal_method_config['pred_loss_coef']
+        self.primal_info_loss_coef = primal_method_config['info_loss_coef']
 
-        self.fix_r = method_config.get('fix_r', None)
-        self.decay_interval = method_config.get('decay_interval', None)
-        self.decay_r = method_config.get('decay_r', None)
-        self.final_r = method_config.get('final_r', 0.1)
-        self.init_r = method_config.get('init_r', 0.9)
+        self.primal_fix_r = primal_method_config.get('fix_r', None)
+        self.primal_decay_interval = primal_method_config.get('decay_interval', None)
+        self.primal_decay_r = primal_method_config.get('decay_r', None)
+        self.primal_final_r = primal_method_config.get('final_r', 0.1)
+        self.primal_init_r = primal_method_config.get('init_r', 0.9)
 
-        self.multi_label = multi_label
-        self.criterion = Criterion(num_class, multi_label)
+        self.primal_multi_label = primal_multi_label
+        self.primal_criterion = Criterion(primal_num_class, primal_multi_label)
 
-    def __loss__(self, att, clf_logits, clf_labels, epoch):
-        pred_loss = self.criterion(clf_logits, clf_labels)
+        #DUAL
+        self.dual_clf = dual_clf
+        self.dual_extractor = dual_extractor
+        self.dual_optimizer = dual_optimizer
+        self.dual_scheduler = dual_scheduler
 
-        r = self.fix_r if self.fix_r else self.get_r(self.decay_interval, self.decay_r, epoch, final_r=self.final_r, init_r=self.init_r)
+        self.dual_writer = dual_writer
+        self.dual_device = dual_device
+        self.dual_model_dir = dual_model_dir
+        self.dual_dataset_name = dual_dataset_name
+        self.dual_random_state = dual_random_state
+        self.dual_method_name = dual_method_config['method_name']
+
+        self.dual_learn_edge_att = dual_shared_config['learn_edge_att']
+        self.dual_k = dual_shared_config['precision_k']
+        self.dual_num_viz_samples = dual_shared_config['num_viz_samples']
+        self.dual_viz_interval = dual_shared_config['viz_interval']
+        self.dual_viz_norm_att = dual_shared_config['viz_norm_att']
+
+        self.dual_epochs = dual_method_config['epochs']
+        self.dual_pred_loss_coef = dual_method_config['pred_loss_coef']
+        self.dual_info_loss_coef = dual_method_config['info_loss_coef']
+
+        self.dual_fix_r = dual_method_config.get('fix_r', None)
+        self.dual_decay_interval = dual_method_config.get('decay_interval', None)
+        self.dual_decay_r = dual_method_config.get('decay_r', None)
+        self.dual_final_r = dual_method_config.get('final_r', 0.1)
+        self.dual_init_r = dual_method_config.get('init_r', 0.9)
+
+        self.dual_multi_label = dual_multi_label
+        self.dual_criterion = Criterion(dual_num_class, dual_multi_label)
+
+    def __loss__(self, att, clf_logits, clf_labels, epoch): #just used primal self. for all of this
+        pred_loss = self.primal_criterion(clf_logits, clf_labels)
+
+        r = self.primal_fix_r if self.primal_fix_r else self.get_r(self.primal_decay_interval, self.primal_decay_r, epoch, final_r=self.primal_final_r, init_r=self.primal_init_r)
         info_loss = (att * torch.log(att/r + 1e-6) + (1-att) * torch.log((1-att)/(1-r+1e-6) + 1e-6)).mean()
 
-        pred_loss = pred_loss * self.pred_loss_coef
-        info_loss = info_loss * self.info_loss_coef
+        pred_loss = pred_loss * self.primal_pred_loss_coef
+        info_loss = info_loss * self.primal_info_loss_coef
         loss = pred_loss + info_loss
         loss_dict = {'loss': loss.item(), 'pred': pred_loss.item(), 'info': info_loss.item()}
         return loss, loss_dict
+    
+    def dual_forward_pass(self, primal_data, dual_data, epoch, training):
+        dual_emb = self.dual_clf.get_emb(dual_data.x, dual_data.edge_index, batch=dual_data.batch, edge_attr=dual_data.edge_attr)
+        dual_att_log_logits = self.dual_extractor(dual_emb, dual_data.edge_index, dual_data.batch)
+        dual_att = self.sampling(dual_att_log_logits, epoch, training)
+
+        if self.dual_learn_edge_att:
+            if is_undirected(dual_data.edge_index):
+                dual_trans_idx, dual_trans_val = transpose(dual_data.edge_index, dual_att, None, None, coalesced=False)
+                dual_trans_val_perm = reorder_like(dual_trans_idx, dual_data.edge_index, dual_trans_val)
+                dual_edge_att = (dual_att + dual_trans_val_perm) / 2
+            else:
+                dual_edge_att = dual_att
+        else:
+            dual_edge_att = self.lift_node_att_to_edge_att(dual_att, dual_data.edge_index)
+
+        dual_clf_logits = self.dual_clf(dual_data.x, dual_data.edge_index, dual_data.batch, edge_attr=dual_data.edge_attr, edge_atten=dual_edge_att)
+        dual_loss, dual_loss_dict = self.__loss__(dual_att, dual_clf_logits, dual_data.y, epoch)
+
+        primal_emb = self.primal_clf.get_emb(primal_data.x, primal_data.edge_index, batch=primal_data.batch, edge_attr=primal_data.edge_attr)
+        primal_att_log_logits = self.primal_extractor(primal_emb, primal_data.edge_index, primal_data.batch)
+        primal_att = self.sampling(primal_att_log_logits, epoch, training)
+
+
+        if self.primal_learn_edge_att:
+            if is_undirected(primal_data.edge_index):
+                primal_edge_att = dual_att
+            else:
+                primal_edge_att = primal_att
+        else:
+            # print("\U0001F96D primal edge is not learn_edge_att")
+            primal_edge_att = dual_att
+
+        primal_clf_logits = self.primal_clf(primal_data.x, primal_data.edge_index, primal_data.batch, edge_attr=primal_data.edge_attr, edge_atten=primal_edge_att)
+        primal_loss, primal_loss_dict = self.__loss__(primal_att, primal_clf_logits, primal_data.y, epoch) #should this be primal_att cause it doesn't generate?
+
+        loss = dual_loss + primal_loss
+        #loss_dict = primal_loss_dict + dual_loss_dict #dunno if this works
+        loss_dict = primal_loss_dict.copy()  # avoid modifying original dict
+        loss_dict.update(dual_loss_dict)
+
+        return primal_edge_att, loss, loss_dict, primal_clf_logits
 
     def forward_pass(self, data, epoch, training):
-        emb = self.clf.get_emb(data.x, data.edge_index, batch=data.batch, edge_attr=data.edge_attr)
-        att_log_logits = self.extractor(emb, data.edge_index, data.batch)
+        emb = self.primal_clf.get_emb(data.x, data.edge_index, batch=data.batch, edge_attr=data.edge_attr)
+        att_log_logits = self.primal_extractor(emb, data.edge_index, data.batch)
         att = self.sampling(att_log_logits, epoch, training)
 
-        if self.learn_edge_att:
+        if self.primal_learn_edge_att:
             if is_undirected(data.edge_index):
                 trans_idx, trans_val = transpose(data.edge_index, att, None, None, coalesced=False)
                 trans_val_perm = reorder_like(trans_idx, data.edge_index, trans_val)
@@ -88,14 +167,14 @@ class GSAT(nn.Module):
         else:
             edge_att = self.lift_node_att_to_edge_att(att, data.edge_index)
 
-        clf_logits = self.clf(data.x, data.edge_index, data.batch, edge_attr=data.edge_attr, edge_atten=edge_att)
+        clf_logits = self.primal_clf(data.x, data.edge_index, data.batch, edge_attr=data.edge_attr, edge_atten=edge_att)
         loss, loss_dict = self.__loss__(att, clf_logits, data.y, epoch)
         return edge_att, loss, loss_dict, clf_logits
 
     @torch.no_grad()
     def eval_one_batch(self, data, epoch):
-        self.extractor.eval()
-        self.clf.eval()
+        self.primal_extractor.eval()
+        self.primal_clf.eval()
 
         att, loss, loss_dict, clf_logits = self.forward_pass(data, epoch, training=False)
         return att.data.cpu().reshape(-1), loss_dict, clf_logits.data.cpu()
@@ -142,38 +221,130 @@ class GSAT(nn.Module):
                                                                                         all_precision_at_k, all_clf_labels, all_clf_logits, batch=False)
             pbar.set_description(desc)
         return att_auroc, precision, clf_acc, clf_roc, avg_loss
+    
+    def dual_eval_one_batch(self, primal_data, dual_data, epoch):
+        self.primal_extractor.eval()
+        self.primal_clf.eval()
 
-    def train(self, loaders, test_set, metric_dict, use_edge_attr):
-        viz_set = self.get_viz_idx(test_set, self.dataset_name)
-        graph_embeds = []
-        for epoch in range(self.epochs):
-            train_res = self.run_one_epoch(loaders['train'], epoch, 'train', use_edge_attr)
-            valid_res = self.run_one_epoch(loaders['valid'], epoch, 'valid', use_edge_attr)
-            test_res = self.run_one_epoch(loaders['test'], epoch, 'test', use_edge_attr)
-            self.writer.add_scalar('gsat_train/lr', get_lr(self.optimizer), epoch)
+        self.dual_extractor.eval()
+        self.dual_clf.eval()
+
+        att, loss, loss_dict, clf_logits = self.dual_forward_pass(primal_data, dual_data, epoch, training=False)
+        return att.data.cpu().reshape(-1), loss_dict, clf_logits.data.cpu()
+
+    def dual_train_one_batch(self, primal_data, dual_data, epoch): #implement dual primal in forward pass or in GNN Layer
+        self.primal_extractor.train()
+        self.primal_clf.train()
+
+        self.dual_extractor.train()
+        self.dual_clf.train()
+
+        # att, loss, loss_dict, clf_logits = self.forward_pass(data, epoch, training=True)
+        att, loss, loss_dict, clf_logits = self.dual_forward_pass(primal_data, dual_data, epoch, training=True)
+        self.primal_optimizer.zero_grad()
+        self.dual_optimizer.zero_grad()
+        loss.backward()
+        self.primal_optimizer.step()
+        self.dual_optimizer.step()
+        return att.data.cpu().reshape(-1), loss_dict, clf_logits.data.cpu()
+
+    def dual_run_one_epoch(self, primal_data_loader, dual_data_loader, epoch, phase, use_edge_attr):
+        primal_loader_len = len(primal_data_loader)
+        dual_loader_len = len(dual_data_loader)
+
+        run_one_batch = self.dual_train_one_batch if phase == 'train' else self.dual_eval_one_batch
+        phase = 'test ' if phase == 'test' else phase  # align tqdm desc bar
+
+        all_loss_dict = {}
+        all_exp_labels, all_att, all_clf_labels, all_clf_logits, all_precision_at_k = ([] for i in range(5))
+
+        pbar = tqdm(zip(primal_data_loader, dual_data_loader), total=primal_loader_len)
+
+        for idx, (primal_data, dual_data) in enumerate(pbar):
+            primal_data = process_data(primal_data, use_edge_attr)
+            dual_data = process_data(dual_data, use_edge_attr)
+            att, loss_dict, clf_logits = run_one_batch(primal_data.to(self.primal_device), dual_data.to(self.dual_device), epoch)
+
+            exp_labels = primal_data.edge_label.data.cpu()
+            precision_at_k = self.get_precision_at_k(att, exp_labels, self.primal_k, primal_data.batch, primal_data.edge_index)
+            desc, _, _, _, _, _ = self.log_epoch(epoch, phase, loss_dict, exp_labels, att, precision_at_k,
+                                                 primal_data.y.data.cpu(), clf_logits, batch=True)
+            for k, v in loss_dict.items():
+                all_loss_dict[k] = all_loss_dict.get(k, 0) + v
+
+            all_exp_labels.append(exp_labels), all_att.append(att), all_precision_at_k.extend(precision_at_k)
+            all_clf_labels.append(primal_data.y.data.cpu()), all_clf_logits.append(clf_logits)
+
+            if idx == primal_loader_len - 1:
+                all_exp_labels, all_att = torch.cat(all_exp_labels), torch.cat(all_att),
+                all_clf_labels, all_clf_logits = torch.cat(all_clf_labels), torch.cat(all_clf_logits)
+
+                for k, v in all_loss_dict.items():
+                    all_loss_dict[k] = v / primal_loader_len
+                desc, att_auroc, precision, clf_acc, clf_roc, avg_loss = self.log_epoch(epoch, phase, all_loss_dict, all_exp_labels, all_att,
+                                                                                        all_precision_at_k, all_clf_labels, all_clf_logits, batch=False)
+            pbar.set_description(desc)
+        return att_auroc, precision, clf_acc, clf_roc, avg_loss
+
+    def train(self, primal_loaders, dual_loaders, primal_test_set, dual_test_set, metric_dict, use_edge_attr): #just keeping same because didn't change much
+        viz_set = self.get_viz_idx(primal_test_set, self.primal_dataset_name)
+
+        viz_set = self.get_viz_idx(dual_test_set, self.dual_dataset_name)
+
+        primal_graph_embeds = []
+        dual_graph_embeds = []
+
+        for epoch in range(self.primal_epochs):
+            train_res = self.dual_run_one_epoch(primal_loaders['train'], dual_loaders['train'], epoch, 'train', use_edge_attr)
+            valid_res = self.dual_run_one_epoch(primal_loaders['valid'], dual_loaders['valid'], epoch, 'valid', use_edge_attr)
+            test_res = self.dual_run_one_epoch(primal_loaders['test'], dual_loaders['test'], epoch, 'test', use_edge_attr)
+            self.primal_writer.add_scalar('gsat_train/lr', get_lr(self.primal_optimizer), epoch) #need dual?
 
             # MANGO BELOW
-            self.clf.eval()
-            graph_embeds_epoch = []
+            self.primal_clf.eval() #need_dual?
+            self.dual_clf.eval()
+            primal_graph_embeds_epoch = []
+            dual_graph_embeds_epoch = []
 
-            for data in test_set:
-                data = data.to(self.device)
+            # for data in primal_test_set:
+            #     data = data.to(self.primal_device)
+            #     with torch.no_grad():
+            #         batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.primal_device)
+            #         #graph_emb = self.primal_clf.get_graph_emb(data.x, data.edge_index, batch, data.edge_attr)
+            #         node_emb = self.primal_clf.get_emb(data.x, data.edge_index, batch=data.batch, edge_attr=data.edge_attr)
+            #     graph_embeds_epoch.append(graph_emb.cpu())
+
+            for data in primal_test_set:  # <- use a DataLoader that batches graphs
+                data = data.to(self.primal_device)
                 with torch.no_grad():
-                    batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.device)
-                    graph_emb = self.clf.get_graph_emb(data.x, data.edge_index, batch, data.edge_attr)
-                graph_embeds_epoch.append(graph_emb.cpu())
+                    batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.primal_device)
+                    node_emb = self.primal_clf.get_emb(data.x, data.edge_index, batch=batch, edge_attr=data.edge_attr)
+                    #graph_emb = self.primal_clf.get_graph_emb(data.x, data.edge_index, batch=batch, edge_attr=data.edge_attr)
+                    primal_graph_embeds_epoch.append(node_emb.cpu())
 
-            graph_embeds_epoch = torch.cat(graph_embeds_epoch, dim=0) 
-            graph_embeds.append(graph_embeds_epoch)
+            for data in dual_test_set:  # <- use a DataLoader that batches graphs
+                data = data.to(self.dual_device)
+                with torch.no_grad():
+                    batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.dual_device)
+                    node_emb = self.dual_clf.get_emb(data.x, data.edge_index, batch=batch, edge_attr=data.edge_attr)
+                    #graph_emb = self.dual_clf.get_graph_emb(data.x, data.edge_index, batch=batch, edge_attr=data.edge_attr)
+                    dual_graph_embeds_epoch.append(node_emb.cpu())
+
+            # primal_graph_embeds_epoch = torch.cat(primal_graph_embeds_epoch, dim=0) 
+            primal_graph_embeds.append(primal_graph_embeds_epoch)
+
+            # dual_graph_embeds_epoch = torch.cat(dual_graph_embeds_epoch, dim=0) 
+            dual_graph_embeds.append(dual_graph_embeds_epoch)
+
             #MANGO ABOVE
 
             assert len(train_res) == 5
-            main_metric_idx = 3 if 'ogb' in self.dataset_name else 2  # clf_roc or clf_acc
-            if self.scheduler is not None:
-                self.scheduler.step(valid_res[main_metric_idx])
+            main_metric_idx = 3 if 'ogb' in self.primal_dataset_name else 2  # clf_roc or clf_acc
+            if self.primal_scheduler is not None:
+                self.primal_scheduler.step(valid_res[main_metric_idx])
 
-            r = self.fix_r if self.fix_r else self.get_r(self.decay_interval, self.decay_r, epoch, final_r=self.final_r, init_r=self.init_r)
-            if (r == self.final_r or self.fix_r) and epoch > 10 and ((valid_res[main_metric_idx] > metric_dict['metric/best_clf_valid'])
+            r = self.primal_fix_r if self.primal_fix_r else self.get_r(self.primal_decay_interval, self.primal_decay_r, epoch, final_r=self.primal_final_r, init_r=self.primal_init_r)
+            if (r == self.primal_final_r or self.primal_fix_r) and epoch > 10 and ((valid_res[main_metric_idx] > metric_dict['metric/best_clf_valid'])
                                                                      or (valid_res[main_metric_idx] == metric_dict['metric/best_clf_valid']
                                                                          and valid_res[4] < metric_dict['metric/best_clf_valid_loss'])):
 
@@ -181,38 +352,111 @@ class GSAT(nn.Module):
                                'metric/best_clf_train': train_res[main_metric_idx], 'metric/best_clf_valid': valid_res[main_metric_idx], 'metric/best_clf_test': test_res[main_metric_idx],
                                'metric/best_x_roc_train': train_res[0], 'metric/best_x_roc_valid': valid_res[0], 'metric/best_x_roc_test': test_res[0],
                                'metric/best_x_precision_train': train_res[1], 'metric/best_x_precision_valid': valid_res[1], 'metric/best_x_precision_test': test_res[1]}
-                save_checkpoint(self.clf, self.model_dir, model_name='gsat_clf_epoch_' + str(epoch))
-                save_checkpoint(self.extractor, self.model_dir, model_name='gsat_att_epoch_' + str(epoch))
+                save_checkpoint(self.primal_clf, self.primal_model_dir, model_name='gsat_clf_epoch_' + str(epoch))
+                save_checkpoint(self.primal_extractor, self.primal_model_dir, model_name='gsat_att_epoch_' + str(epoch))
 
             for metric, value in metric_dict.items():
                 metric = metric.split('/')[-1]
-                self.writer.add_scalar(f'gsat_best/{metric}', value, epoch)
+                self.primal_writer.add_scalar(f'gsat_best/{metric}', value, epoch)
 
-            if self.num_viz_samples != 0 and (epoch % self.viz_interval == 0 or epoch == self.epochs - 1):
-                if self.multi_label:
+            if self.primal_num_viz_samples != 0 and (epoch % self.primal_viz_interval == 0 or epoch == epoch - 1):
+                if self.primal_multi_label:
                     raise NotImplementedError
                 for idx, tag in viz_set:
-                    self.visualize_results(test_set, idx, epoch, tag, use_edge_attr)
+                    self.visualize_results(primal_test_set, idx, epoch, tag, use_edge_attr)
 
-            if epoch == self.epochs - 1:
-                save_checkpoint(self.clf, self.model_dir, model_name='gsat_clf_epoch_' + str(epoch))
-                save_checkpoint(self.extractor, self.model_dir, model_name='gsat_att_epoch_' + str(epoch))
+            if epoch == self.primal_epochs - 1:
+                save_checkpoint(self.primal_clf, self.primal_model_dir, model_name='gsat_clf_epoch_' + str(epoch))
+                save_checkpoint(self.primal_extractor, self.primal_model_dir, model_name='gsat_att_epoch_' + str(epoch))
 
-            print(f'[Seed {self.random_state}, Epoch: {epoch}]: Best Epoch: {metric_dict["metric/best_clf_epoch"]}, '
+            print(f'[Seed {self.primal_random_state}, Epoch: {epoch}]: Best Epoch: {metric_dict["metric/best_clf_epoch"]}, '
                   f'Best Val Pred ACC/ROC: {metric_dict["metric/best_clf_valid"]:.3f}, Best Test Pred ACC/ROC: {metric_dict["metric/best_clf_test"]:.3f}, '
                   f'Best Test X AUROC: {metric_dict["metric/best_x_roc_test"]:.3f}')
             print('====================================')
             print('====================================')
     
-        graph_embeds_epoch = torch.cat(graph_embeds, dim=0) 
+        #primal_graph_embeds = torch.cat(primal_graph_embeds) 
+        #dual_graph_embeds = torch.cat(dual_graph_embeds) 
 
-        return metric_dict, graph_embeds
+        ##### FROM HERE for NSA 
+
+        # print('\U0001F96D len(primal_graph_embeddings)', len(primal_graph_embeds))
+        # print('\U0001F96D len(dual_graph_embeddings)', len(dual_graph_embeds))
+
+        # local_nsa = LNSA_loss()
+        # global_nsa = NSALoss()
+
+        # for i in range(self.primal_epochs):
+        #     print(f"\U0001F96D ========== epoch{i} =========")
+
+            # l_nsa_values = []
+            # for prim_emb, dual_emb in zip(primal_graph_embeds[i], dual_graph_embeds[i]):
+            #     l_nsa_val = local_nsa(prim_emb, dual_emb)
+            #     l_nsa_values.append(l_nsa_val.item())  # or just l_nsa_val if you want tensors
+
+            # # Aggregate, e.g. average
+            # l_nsa = sum(l_nsa_values) / len(l_nsa_values)
+            # input("continue lnsa")
+
+            # print("primal_graph_embeds[i].shape =", primal_graph_embeds[i][1].shape)
+            # print("dual_graph_embeds[i].shape =", dual_graph_embeds[i][1].shape)
+            # input("continue")
+
+            #g_nsa = global_nsa(primal_graph_embeds[i], dual_graph_embeds[i])
+            # l_nsa = local_nsa(primal_graph_embeds[i], dual_graph_embeds[i])
+            #nsa = g_nsa + l_nsa
+
+            #print("\U0001F96D global_nsa:", g_nsa)
+            # print("\U0001F96D local_nsa:", l_nsa)
+            #print("\U0001F96D nsa:", nsa)
+
+            # p_np = primal_graph_embeds[i].detach().cpu().numpy()
+            # d_np = dual_graph_embeds[i].detach().cpu().numpy()
+
+            # p_np = torch.cat(primal_graph_embeds[i], dim=0).detach().cpu().numpy()
+            # d_np = torch.cat(dual_graph_embeds[i], dim=0).detach().cpu().numpy()
+
+            # all_embeddings = np.vstack([p_np, d_np])
+            # labels = np.array(['Primal'] * len(p_np) + ['Dual'] * len(d_np))
+
+            # tsne = TSNE(n_components=2, perplexity=30, init='random', random_state=42)
+            # emb_2d = tsne.fit_transform(all_embeddings)
+
+            # plt.figure(figsize=(8, 6))
+
+
+            # #DRAWS LINE B/W CORRESPONDING
+            # # for j in range(len(p_np)):
+            # #     p = emb_2d[j]
+            # #     d = emb_2d[j + len(p_np)]
+            # #     plt.plot([p[0], d[0]], [p[1], d[1]], color='gray', linewidth=0.5, alpha=0.4)
+
+            # plt.scatter(emb_2d[:len(p_np), 0], emb_2d[:len(p_np), 1], label='Primal', alpha=0.8)
+            # plt.scatter(emb_2d[len(p_np):, 0], emb_2d[len(p_np):, 1], label='Dual', alpha=0.8)
+
+            # plt.title(f"t-SNE: Primal vs Dual Node Embeddings (Epoch {i})")
+            # plt.legend()
+            # plt.tight_layout()
+
+            # #plt.savefig(f"../Graph_Visualizations_MUTAG/DPGE_paper_{i}.png", dpi=600, bbox_inches='tight')
+
+            # plt.show()
+
+            # # import os
+
+            # # os.makedirs('../Graph_Visualizations_MUTAG/t-SNE_over_100_epochs/', exist_ok=True)
+            
+            # input("Continue to next epoch...")
+
+        ##### TILL HERE
+
+        return metric_dict
 
     def log_epoch(self, epoch, phase, loss_dict, exp_labels, att, precision_at_k, clf_labels, clf_logits, batch):
-        desc = f'[Seed {self.random_state}, Epoch: {epoch}]: gsat_{phase}........., ' if batch else f'[Seed {self.random_state}, Epoch: {epoch}]: gsat_{phase} finished, '
+        desc = f'[Seed {self.primal_random_state}, Epoch: {epoch}]: gsat_{phase}........., ' if batch else f'[Seed {self.primal_random_state}, Epoch: {epoch}]: gsat_{phase} finished, '
         for k, v in loss_dict.items():
             if not batch:
-                self.writer.add_scalar(f'gsat_{phase}/{k}', v, epoch)
+                self.primal_writer.add_scalar(f'gsat_{phase}/{k}', v, epoch)
             desc += f'{k}: {v:.3f}, '
 
         eval_desc, att_auroc, precision, clf_acc, clf_roc = self.get_eval_score(epoch, phase, exp_labels, att, precision_at_k, clf_labels, clf_logits, batch)
@@ -220,16 +464,16 @@ class GSAT(nn.Module):
         return desc, att_auroc, precision, clf_acc, clf_roc, loss_dict['pred']
 
     def get_eval_score(self, epoch, phase, exp_labels, att, precision_at_k, clf_labels, clf_logits, batch):
-        clf_preds = get_preds(clf_logits, self.multi_label)
-        clf_acc = 0 if self.multi_label else (clf_preds == clf_labels).sum().item() / clf_labels.shape[0]
+        clf_preds = get_preds(clf_logits, self.primal_multi_label)
+        clf_acc = 0 if self.primal_multi_label else (clf_preds == clf_labels).sum().item() / clf_labels.shape[0]
 
         if batch:
             return f'clf_acc: {clf_acc:.3f}', None, None, None, None
 
         precision_at_k = np.mean(precision_at_k)
         clf_roc = 0
-        if 'ogb' in self.dataset_name:
-            evaluator = Evaluator(name='-'.join(self.dataset_name.split('_')))
+        if 'ogb' in self.primal_dataset_name:
+            evaluator = Evaluator(name='-'.join(self.primal_dataset_name.split('_')))
             clf_roc = evaluator.eval({'y_pred': clf_logits, 'y_true': clf_labels})['rocauc']
 
         att_auroc, bkg_att_weights, signal_att_weights = 0, att, att
@@ -238,18 +482,18 @@ class GSAT(nn.Module):
             bkg_att_weights = att[exp_labels == 0]
             signal_att_weights = att[exp_labels == 1]
 
-        self.writer.add_histogram(f'gsat_{phase}/bkg_att_weights', bkg_att_weights, epoch)
-        self.writer.add_histogram(f'gsat_{phase}/signal_att_weights', signal_att_weights, epoch)
-        self.writer.add_scalar(f'gsat_{phase}/clf_acc/', clf_acc, epoch)
-        self.writer.add_scalar(f'gsat_{phase}/clf_roc/', clf_roc, epoch)
-        self.writer.add_scalar(f'gsat_{phase}/att_auroc/', att_auroc, epoch)
-        self.writer.add_scalar(f'gsat_{phase}/precision@{self.k}/', precision_at_k, epoch)
-        self.writer.add_scalar(f'gsat_{phase}/avg_bkg_att_weights/', bkg_att_weights.mean(), epoch)
-        self.writer.add_scalar(f'gsat_{phase}/avg_signal_att_weights/', signal_att_weights.mean(), epoch)
-        self.writer.add_pr_curve(f'PR_Curve/gsat_{phase}/', exp_labels, att, epoch)
+        self.primal_writer.add_histogram(f'gsat_{phase}/bkg_att_weights', bkg_att_weights, epoch)
+        self.primal_writer.add_histogram(f'gsat_{phase}/signal_att_weights', signal_att_weights, epoch)
+        self.primal_writer.add_scalar(f'gsat_{phase}/clf_acc/', clf_acc, epoch)
+        self.primal_writer.add_scalar(f'gsat_{phase}/clf_roc/', clf_roc, epoch)
+        self.primal_writer.add_scalar(f'gsat_{phase}/att_auroc/', att_auroc, epoch)
+        self.primal_writer.add_scalar(f'gsat_{phase}/precision@{self.primal_k}/', precision_at_k, epoch)
+        self.primal_writer.add_scalar(f'gsat_{phase}/avg_bkg_att_weights/', bkg_att_weights.mean(), epoch)
+        self.primal_writer.add_scalar(f'gsat_{phase}/avg_signal_att_weights/', signal_att_weights.mean(), epoch)
+        self.primal_writer.add_pr_curve(f'PR_Curve/gsat_{phase}/', exp_labels, att, epoch)
 
         desc = f'clf_acc: {clf_acc:.3f}, clf_roc: {clf_roc:.3f}, ' + \
-               f'att_roc: {att_auroc:.3f}, att_prec@{self.k}: {precision_at_k:.3f}'
+               f'att_roc: {att_auroc:.3f}, att_prec@{self.primal_k}: {precision_at_k:.3f}'
         return desc, att_auroc, precision_at_k, clf_acc, clf_roc
 
     def get_precision_at_k(self, att, exp_labels, k, batch, edge_index):
@@ -274,7 +518,7 @@ class GSAT(nn.Module):
                 candidate_set = np.nonzero(condi)[0]
             else:
                 candidate_set = np.nonzero(y_dist == each_class)[0]
-            idx = np.random.choice(candidate_set, self.num_viz_samples, replace=False)
+            idx = np.random.choice(candidate_set, self.primal_num_viz_samples, replace=False)
             res.append((idx, tag))
         return res
 
@@ -282,33 +526,33 @@ class GSAT(nn.Module):
         viz_set = test_set[idx]
         data = next(iter(DataLoader(viz_set, batch_size=len(idx), shuffle=False)))
         data = process_data(data, use_edge_attr)
-        batch_att, _, clf_logits = self.eval_one_batch(data.to(self.device), epoch)
+        batch_att, _, clf_logits = self.eval_one_batch(data.to(self.primal_device), epoch)
         imgs = []
         for i in tqdm(range(len(viz_set))):
             mol_type, coor = None, None
-            if self.dataset_name == 'mutag':
+            if self.primal_dataset_name == 'mutag':
                 node_dict = {0: 'C', 1: 'O', 2: 'Cl', 3: 'H', 4: 'N', 5: 'F', 6: 'Br', 7: 'S', 8: 'P', 9: 'I', 10: 'Na', 11: 'K', 12: 'Li', 13: 'Ca'}
                 mol_type = {k: node_dict[v.item()] for k, v in enumerate(viz_set[i].node_type)}
-            elif self.dataset_name == 'Graph-SST2':
+            elif self.primal_dataset_name == 'Graph-SST2':
                 mol_type = {k: v for k, v in enumerate(viz_set[i].sentence_tokens)}
                 num_nodes = data.x.shape[0]
                 x = np.linspace(0, 1, num_nodes)
                 y = np.ones_like(x)
                 coor = np.stack([x, y], axis=1)
-            elif self.dataset_name == 'ogbg_molhiv':
+            elif self.primal_dataset_name == 'ogbg_molhiv':
                 element_idxs = {k: int(v+1) for k, v in enumerate(viz_set[i].x[:, 0])}
                 mol_type = {k: Chem.PeriodicTable.GetElementSymbol(Chem.GetPeriodicTable(), int(v)) for k, v in element_idxs.items()}
-            elif self.dataset_name == 'mnist':
+            elif self.primal_dataset_name == 'mnist':
                 raise NotImplementedError
 
             node_subset = data.batch == i
             _, edge_att = subgraph(node_subset, data.edge_index, edge_attr=batch_att)
 
             node_label = viz_set[i].node_label.reshape(-1) if viz_set[i].get('node_label', None) is not None else torch.zeros(viz_set[i].x.shape[0])
-            fig, img = visualize_a_graph(viz_set[i].edge_index, edge_att, node_label, self.dataset_name, norm=self.viz_norm_att, mol_type=mol_type, coor=coor)
+            fig, img = visualize_a_graph(viz_set[i].edge_index, edge_att, node_label, self.primal_dataset_name, norm=self.primal_viz_norm_att, mol_type=mol_type, coor=coor)
             imgs.append(img)
         imgs = np.stack(imgs)
-        self.writer.add_images(tag, imgs, epoch, dataformats='NHWC')
+        self.primal_writer.add_images(tag, imgs, epoch, dataformats='NHWC')
 
     def get_r(self, decay_interval, decay_r, current_epoch, init_r=0.9, final_r=0.5):
         r = init_r - current_epoch // decay_interval * decay_r
@@ -342,22 +586,22 @@ class ExtractorMLP(nn.Module):
 
     def __init__(self, hidden_size, shared_config):
         super().__init__()
-        self.learn_edge_att = shared_config['learn_edge_att']
+        self.primal_learn_edge_att = shared_config['learn_edge_att']
         dropout_p = shared_config['extractor_dropout_p']
 
-        if self.learn_edge_att:
-            self.feature_extractor = MLP([hidden_size * 2, hidden_size * 4, hidden_size, 1], dropout=dropout_p)
+        if self.primal_learn_edge_att:
+            self.primal_feature_extractor = MLP([hidden_size * 2, hidden_size * 4, hidden_size, 1], dropout=dropout_p)
         else:
-            self.feature_extractor = MLP([hidden_size * 1, hidden_size * 2, hidden_size, 1], dropout=dropout_p)
+            self.primal_feature_extractor = MLP([hidden_size * 1, hidden_size * 2, hidden_size, 1], dropout=dropout_p)
 
     def forward(self, emb, edge_index, batch):
-        if self.learn_edge_att:
+        if self.primal_learn_edge_att:
             col, row = edge_index
             f1, f2 = emb[col], emb[row]
             f12 = torch.cat([f1, f2], dim=-1)
-            att_log_logits = self.feature_extractor(f12, batch[col])
+            att_log_logits = self.primal_feature_extractor(f12, batch[col])
         else:
-            att_log_logits = self.feature_extractor(emb, batch)
+            att_log_logits = self.primal_feature_extractor(emb, batch)
         return att_log_logits
 
 
@@ -394,18 +638,21 @@ def train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_nam
     #DUAL
 
     batch_size, splits = data_config['batch_size'], data_config.get('splits', None)
-    loaders, test_set, x_dim, edge_attr_dim, num_class, aux_info = get_data_loaders(data_dir, dataset_name, batch_size, splits, random_state, data_config.get('mutag_x', False))
+    loaders, primal_test_set, x_dim, edge_attr_dim, num_class, aux_info = get_data_loaders(data_dir, dataset_name, batch_size, splits, random_state, data_config.get('mutag_x', False))
 
     #DUAL
     dual_loaders, dual_test_set, dual_x_dim, dual_edge_attr_dim, dual_num_class, dual_aux_info = get_data_loaders(data_dir, 'dual_mutag', batch_size, splits, random_state, data_config.get('mutag_x', False))
+    
+    #input(dual_x_dim)
     #DUAL
 
     model_config['deg'] = aux_info['deg'] # degree histogram
-    model = get_model(x_dim, edge_attr_dim, num_class, aux_info['multi_label'], model_config, device)
+    primal_model = get_model(x_dim, edge_attr_dim, num_class, aux_info['multi_label'], model_config, device)
 
     #DUAL
     dual_model_config['deg'] = dual_aux_info['deg']
     dual_model = get_model(dual_x_dim, dual_edge_attr_dim, dual_num_class, dual_aux_info['multi_label'], dual_model_config, device)
+    #input(dual_x_dim)
     #DUAL
 
     print('====================================')
@@ -433,12 +680,12 @@ def train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_nam
         print('[DUAL INFO] Training both the model and the attention from scratch...')
     #DUAL
 
-    extractor = ExtractorMLP(model_config['hidden_size'], shared_config).to(device)
+    extractor = ExtractorMLP(model_config['hidden_size'], shared_config).to(device) #this is the parameter to be changed 
     lr, wd = method_config['lr'], method_config.get('weight_decay', 0)
-    optimizer = torch.optim.Adam(list(extractor.parameters()) + list(model.parameters()), lr=lr, weight_decay=wd)
+    primal_optimizer = torch.optim.Adam(list(extractor.parameters()) + list(primal_model.parameters()), lr=lr, weight_decay=wd)
 
     scheduler_config = method_config.get('scheduler', {})
-    scheduler = None if scheduler_config == {} else ReduceLROnPlateau(optimizer, mode='max', **scheduler_config)
+    primal_scheduler = None if scheduler_config == {} else ReduceLROnPlateau(primal_optimizer, mode='max', **scheduler_config)
 
     writer = Writer(log_dir=log_dir)
     hparam_dict = {**model_config, **data_config}
@@ -446,15 +693,21 @@ def train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_nam
     metric_dict = deepcopy(init_metric_dict)
     writer.add_hparams(hparam_dict=hparam_dict, metric_dict=metric_dict)
 
-    print('====================================')
-    print('[INFO] Training GSAT...')
-    gsat = GSAT(model, extractor, optimizer, scheduler, writer, device, log_dir, dataset_name, num_class, aux_info['multi_label'], random_state, method_config, shared_config)
-    metric_dict, primal_graph_embeddings = gsat.train(loaders, test_set, metric_dict, model_config.get('use_edge_attr', True))
+    # print('====================================')
+    # print('[INFO] Training GSAT...') #might need to pass in two parameters?
+    # gsat = GSAT(model, extractor, optimizer, scheduler, writer, device, log_dir, dataset_name, num_class, aux_info['multi_label'], random_state, method_config, shared_config)
+    # metric_dict, primal_graph_embeddings = gsat.train(loaders, dual_loaders, test_set, metric_dict, model_config.get('use_edge_attr', True))
 
     #DUAL
     dual_extractor = ExtractorMLP(dual_model_config['hidden_size'], dual_shared_config).to(device)
     dual_lr, dual_wd = dual_method_config['lr'], dual_method_config.get('weight_decay', 0)
     dual_optimizer = torch.optim.Adam(list(dual_extractor.parameters()) + list(dual_model.parameters()), lr=dual_lr, weight_decay=dual_wd)
+
+    # print("dual_model.parameters(): ", dual_model.parameters())
+    # print("dual_extractor.parameters(): ", dual_extractor.parameters())
+    # print("primal_model.parameters(): ", primal_model.parameters())
+    # print("primal_extractor.parameters(): ", extractor.parameters())
+    #input("continue")
 
     dual_scheduler_config = dual_method_config.get('scheduler', {})
     dual_scheduler = None if dual_scheduler_config == {} else ReduceLROnPlateau(dual_optimizer, mode='max', **dual_scheduler_config)
@@ -465,10 +718,13 @@ def train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_nam
     dual_metric_dict = deepcopy(init_metric_dict)
     dual_writer.add_hparams(hparam_dict=dual_hparam_dict, metric_dict=dual_metric_dict)
 
-    print('====================================')
-    print('[DUAL INFO] Training GSAT...')
-    dual_gsat = GSAT(dual_model, dual_extractor, dual_optimizer, dual_scheduler, dual_writer, device, dual_log_dir, dual_dataset_name, dual_num_class, dual_aux_info['multi_label'], random_state, dual_method_config, dual_shared_config)
-    dual_metric_dict, dual_graph_embeddings = dual_gsat.train(dual_loaders, dual_test_set, dual_metric_dict, dual_model_config.get('use_edge_attr', True))
+    # print('====================================') #NOT SURE ABT THIS 
+    # print('[DUAL INFO] Training GSAT...')
+    # dual_gsat = GSAT(dual_model, dual_extractor, dual_optimizer, dual_scheduler, dual_writer, device, dual_log_dir, dual_dataset_name, dual_num_class, dual_aux_info['multi_label'], random_state, dual_method_config, dual_shared_config)
+    # dual_metric_dict, dual_graph_embeddings = dual_gsat.train(dual_loaders, dual_test_set, dual_metric_dict, dual_model_config.get('use_edge_attr', True))
+
+    gsat = GSAT(primal_model, extractor, primal_optimizer, primal_scheduler, writer, device, log_dir, dataset_name, num_class, aux_info['multi_label'], random_state, method_config, shared_config, dual_model, dual_extractor, dual_optimizer, dual_scheduler, dual_writer, device, dual_log_dir, dual_dataset_name, dual_num_class, dual_aux_info['multi_label'], random_state, dual_method_config, dual_shared_config)
+    metric_dict = gsat.train(loaders, dual_loaders, primal_test_set, dual_test_set, metric_dict, model_config.get('use_edge_attr', True))
 
     #DUAL
 
@@ -508,98 +764,107 @@ def train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_nam
     #         # dual_graph_emb = global_mean_pool(dual_emb, batch)
     #     dual_graph_embeddings.append(dual_graph_emb.cpu())
 
-    print('\U0001F96D len(primal_graph_embeddings)', len(primal_graph_embeddings))
-    print('\U0001F96D len(dual_graph_embeddings)', len(dual_graph_embeddings))
+    ###### FROM HERE for NSA 
 
-    # primal_graph_embeddings = torch.cat(primal_graph_embeddings) 
-    # dual_graph_embeddings = torch.cat(dual_graph_embeddings)
-    # print('\U0001F96D primal_graph_embeddings.shape', primal_graph_embeddings.shape)
-    # print('\U0001F96D dual_graph_embeddings.shape', dual_graph_embeddings.shape)
+    # print('\U0001F96D len(primal_graph_embeddings)', len(primal_graph_embeddings))
+    # print('\U0001F96D len(dual_graph_embeddings)', len(dual_graph_embeddings))
 
-    local_nsa = LNSA_loss()
-    global_nsa = NSALoss()
+    # # primal_graph_embeddings = torch.cat(primal_graph_embeddings) 
+    # # dual_graph_embeddings = torch.cat(dual_graph_embeddings)
+    # # print('\U0001F96D primal_graph_embeddings.shape', primal_graph_embeddings.shape)
+    # # print('\U0001F96D dual_graph_embeddings.shape', dual_graph_embeddings.shape)
 
-    from sklearn.decomposition import PCA
-    from sklearn.manifold import TSNE
-    import matplotlib.pyplot as plt
+    # local_nsa = LNSA_loss()
+    # global_nsa = NSALoss()
 
-    def safe_reduce(emb):
-        emb = emb.copy()
-        emb = np.clip(emb, -100, 100)  # Reduce instability
-        emb -= np.mean(emb, axis=0)
-        emb /= (np.std(emb, axis=0) + 1e-6)
-        try:
-            reducer = PCA(n_components=2, svd_solver='full')
-            return reducer.fit_transform(emb)
-        except Exception as e:
-            print("PCA failed, using t-SNE instead:", e)
-            reducer = TSNE(n_components=2, perplexity=30, init="random", random_state=42)
-            return reducer.fit_transform(emb)
+    # from sklearn.decomposition import PCA
+    # from sklearn.manifold import TSNE
+    # import matplotlib.pyplot as plt
 
-    from sklearn.manifold import TSNE
+    # def safe_reduce(emb):
+    #     emb = emb.copy()
+    #     emb = np.clip(emb, -100, 100)  # Reduce instability
+    #     emb -= np.mean(emb, axis=0)
+    #     emb /= (np.std(emb, axis=0) + 1e-6)
+    #     try:
+    #         reducer = PCA(n_components=2, svd_solver='full')
+    #         return reducer.fit_transform(emb)
+    #     except Exception as e:
+    #         print("PCA failed, using t-SNE instead:", e)
+    #         reducer = TSNE(n_components=2, perplexity=30, init="random", random_state=42)
+    #         return reducer.fit_transform(emb)
 
-    for i in range(model_config['pretrain_epochs']):
-        print(f"\U0001F96D ========== epoch{i} =========")
+    # for i in range(model_config['pretrain_epochs']):
+    #     print(f"\U0001F96D ========== epoch{i} =========")
 
-        # NSA values
-        g_nsa = global_nsa(primal_graph_embeddings[i], dual_graph_embeddings[i])
-        l_nsa = local_nsa(primal_graph_embeddings[i], dual_graph_embeddings[i])
-        nsa = g_nsa + l_nsa
+    #     # NSA values
+    #     g_nsa = global_nsa(primal_graph_embeddings[i], dual_graph_embeddings[i])
+    #     l_nsa = local_nsa(primal_graph_embeddings[i], dual_graph_embeddings[i])
+    #     nsa = g_nsa + l_nsa
 
-        print("\U0001F96D global_nsa:", g_nsa)
-        print("\U0001F96D local_nsa:", l_nsa)
-        print("\U0001F96D nsa:", nsa)
+    #     print("\U0001F96D global_nsa:", g_nsa)
+    #     print("\U0001F96D local_nsa:", l_nsa)
+    #     print("\U0001F96D nsa:", nsa)
 
-        # ---- t-SNE Visualization ----
-        p_np = primal_graph_embeddings[i].detach().cpu().numpy()
-        d_np = dual_graph_embeddings[i].detach().cpu().numpy()
+    #     # ---- t-SNE Visualization ----
+    #     p_np = primal_graph_embeddings[i].detach().cpu().numpy()
+    #     d_np = dual_graph_embeddings[i].detach().cpu().numpy()
 
-        all_embeddings = np.vstack([p_np, d_np])
-        labels = np.array(['Primal'] * len(p_np) + ['Dual'] * len(d_np))
+    #     all_embeddings = np.vstack([p_np, d_np])
+    #     labels = np.array(['Primal'] * len(p_np) + ['Dual'] * len(d_np))
 
-        # t-SNE projection
-        tsne = TSNE(n_components=2, perplexity=30, init='random', random_state=42)
-        emb_2d = tsne.fit_transform(all_embeddings)
+    #     # t-SNE projection
+    #     tsne = TSNE(n_components=2, perplexity=30, init='random', random_state=42)
+    #     emb_2d = tsne.fit_transform(all_embeddings)
 
-        plt.figure(figsize=(8, 6))
+    #     plt.figure(figsize=(8, 6))
 
-        # Draw lines connecting matching primal/dual embeddings
-        for j in range(len(p_np)):
-            p = emb_2d[j]
-            d = emb_2d[j + len(p_np)]
-            plt.plot([p[0], d[0]], [p[1], d[1]], color='gray', linewidth=0.5, alpha=0.4)
+    #     # Draw lines connecting matching primal/dual embeddings
+    #     for j in range(len(p_np)):
+    #         p = emb_2d[j]
+    #         d = emb_2d[j + len(p_np)]
+    #         plt.plot([p[0], d[0]], [p[1], d[1]], color='gray', linewidth=0.5, alpha=0.4)
 
-        # Scatter points
-        plt.scatter(emb_2d[:len(p_np), 0], emb_2d[:len(p_np), 1], label='Primal', alpha=0.8)
-        plt.scatter(emb_2d[len(p_np):, 0], emb_2d[len(p_np):, 1], label='Dual', alpha=0.8)
+    #     # Scatter points
+    #     plt.scatter(emb_2d[:len(p_np), 0], emb_2d[:len(p_np), 1], label='Primal', alpha=0.8)
+    #     plt.scatter(emb_2d[len(p_np):, 0], emb_2d[len(p_np):, 1], label='Dual', alpha=0.8)
 
-        plt.title(f"t-SNE: Primal vs Dual Embeddings (Epoch {i})")
-        plt.legend()
-        plt.tight_layout()
-        plt.show()
+    #     plt.title(f"t-SNE: Primal vs Dual Embeddings (Epoch {i})")
+    #     plt.legend()
+    #     plt.tight_layout()
+    #     plt.show()
 
-        # input("continue to pca")
+    #     import os
+
+    #     os.makedirs('../Graph_Visualizations_MUTAG/t-SNE_over_100_epochs/', exist_ok=True)
+
+    #     if i % 10 == 0:
+    #         plt.savefig(f"../Graph_Visualizations_MUTAG/t-SNE_over_100_epochs/t-SNE_Epoch_{i}.png", dpi=300, bbox_inches='tight')
+
+    #     # input("continue to pca")
         
-        # pca = PCA(n_components=2)
-        # emb_2d_pca = pca.fit_transform(all_embeddings)
+    #     # pca = PCA(n_components=2)
+    #     # emb_2d_pca = pca.fit_transform(all_embeddings)
 
-        # plt.figure(figsize=(8, 6))
+    #     # plt.figure(figsize=(8, 6))
 
-        # for j in range(len(p_np)):
-        #     p = emb_2d_pca[j]
-        #     d = emb_2d_pca[j + len(p_np)]
-        #     plt.plot([p[0], d[0]], [p[1], d[1]], color='gray', linewidth=0.5, alpha=0.4)
+    #     # for j in range(len(p_np)):
+    #     #     p = emb_2d_pca[j]
+    #     #     d = emb_2d_pca[j + len(p_np)]
+    #     #     plt.plot([p[0], d[0]], [p[1], d[1]], color='gray', linewidth=0.5, alpha=0.4)
 
-        # plt.scatter(emb_2d_pca[:len(p_np), 0], emb_2d_pca[:len(p_np), 1], label='Primal', alpha=0.8)
-        # plt.scatter(emb_2d_pca[len(p_np):, 0], emb_2d_pca[len(p_np):, 1], label='Dual', alpha=0.8)
+    #     # plt.scatter(emb_2d_pca[:len(p_np), 0], emb_2d_pca[:len(p_np), 1], label='Primal', alpha=0.8)
+    #     # plt.scatter(emb_2d_pca[len(p_np):, 0], emb_2d_pca[len(p_np):, 1], label='Dual', alpha=0.8)
 
-        # plt.title(f"PCA: Primal vs Dual Embeddings (Epoch {i})")
-        # plt.legend()
-        # plt.tight_layout()
-        # plt.show()
+    #     # plt.title(f"PCA: Primal vs Dual Embeddings (Epoch {i})")
+    #     # plt.legend()
+    #     # plt.tight_layout()
+    #     # plt.show()
 
         
-        input("Continue to next epoch...")
+    #     input("Continue to next epoch...")
+
+    ###### TILL HERE
 
 
         # # Convert embeddings
@@ -635,7 +900,7 @@ def train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_nam
         # plt.savefig(f"pca_epoch_{i}.png")  # save instead of show to avoid hanging
         # plt.close()
 
-        input("continue nsa")
+        #input("continue nsa")
 
 
         # if isinstance(primal_graph_embeddings, list):
@@ -729,6 +994,9 @@ def main():
 
     global_config = yaml.safe_load((config_dir / 'global_config.yml').open('r'))
     local_config_name = get_local_config_name(model_name, dataset_name)
+
+    #input(config_dir / local_config_name)
+
     local_config = yaml.safe_load((config_dir / local_config_name).open('r'))
 
     data_dir = Path(global_config['data_dir'])

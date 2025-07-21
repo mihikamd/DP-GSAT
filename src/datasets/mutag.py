@@ -11,7 +11,7 @@ from torch_geometric.data import InMemoryDataset, Data
 class Mutag(InMemoryDataset):
     def __init__(self, root):
         super().__init__(root=root)
-        #self.process()
+        # self.process()
         self.data, self.slices = torch.load(self.processed_paths[0])
 
     @property
@@ -59,6 +59,7 @@ class Mutag(InMemoryDataset):
 
             # if y.item() == 0 and len(signal_nodes) == 0:
             #     continue
+            print(f"graph {i}, {len(edge_lists[i])} edges")
 
             data_list.append(Data(x=x, y=y, edge_index=edge_index, node_label=node_label, edge_label=edge_label, node_type=torch.tensor(node_type_lists[i])))
 

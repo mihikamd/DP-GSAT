@@ -31,16 +31,16 @@ def get_data_loaders(data_dir, dataset_name, batch_size, splits, random_state, m
 
     elif dataset_name == 'mutag':
         dataset = Mutag(root=data_dir / 'mutag')
-        split_idx = get_random_split_idx(dataset, splits, mutag_x=mutag_x)
+        split_idx = get_random_split_idx(dataset, splits, random_state = 41, mutag_x=mutag_x)
         loaders, test_set = get_loaders_and_test_set(batch_size, dataset=dataset, split_idx=split_idx)
         print("\U0001F96D HERE GOD DAMNIT IM HERE") #MANGO
         train_set = dataset[split_idx['train']]
 
     elif dataset_name == 'dual_mutag':
         dataset = Mutag_Dual(root=data_dir / 'mutag_dual') #MANGO
-        split_idx = get_random_split_idx(dataset, splits, mutag_x=mutag_x)
+        split_idx = get_random_split_idx(dataset, splits, random_state = 41, mutag_x=mutag_x)
         loaders, test_set = get_loaders_and_test_set(batch_size, dataset=dataset, split_idx=split_idx) #MANGO
-        print("\U0001F96D HERE GOD DAMNIT IM HERE NOW") #MANGO
+        print("\U0001F96D HERE CRAP FUCKING BUCKETS") #MANGO
         train_set = dataset[split_idx['train']] #MANGO
 
     elif 'ogbg' in dataset_name:
@@ -126,7 +126,7 @@ def get_random_split_idx(dataset, splits, random_state=None, mutag_x=False):
 def get_loaders_and_test_set(batch_size, dataset=None, split_idx=None, dataset_splits=None):
     if split_idx is not None:
         assert dataset is not None
-        train_loader = DataLoader(dataset[split_idx["train"]], batch_size=batch_size, shuffle=True)
+        train_loader = DataLoader(dataset[split_idx["train"]], batch_size=batch_size, shuffle=False) #used to be true
         valid_loader = DataLoader(dataset[split_idx["valid"]], batch_size=batch_size, shuffle=False)
         test_loader = DataLoader(dataset[split_idx["test"]], batch_size=batch_size, shuffle=False)
         if len(split_idx["test"]) == 0:
@@ -134,7 +134,7 @@ def get_loaders_and_test_set(batch_size, dataset=None, split_idx=None, dataset_s
         test_set = dataset.copy(split_idx["test"])  # For visualization
     else:
         assert dataset_splits is not None
-        train_loader = DataLoader(dataset_splits['train'], batch_size=batch_size, shuffle=True)
+        train_loader = DataLoader(dataset_splits['train'], batch_size=batch_size, shuffle=False) #used to be true
         valid_loader = DataLoader(dataset_splits['valid'], batch_size=batch_size, shuffle=False)
         test_loader = DataLoader(dataset_splits['test'], batch_size=batch_size, shuffle=False)
         test_set = dataset_splits['test']  # For visualization

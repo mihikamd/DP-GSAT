@@ -159,10 +159,16 @@ class NSALoss(nn.Module):
             A1_pairwise = torch.cdist(x,x)    # compute pairwise dist
             A2_pairwise = torch.cdist(z,z)    # compute pairwise dist
             
-            mask = torch.triu(torch.ones_like(A1_pairwise), diagonal=1)
+            #mask = torch.triu(torch.ones_like(A1_pairwise), diagonal=1)
+
+            mask1 = torch.triu(torch.ones_like(A1_pairwise), diagonal=1)
+            mask2 = torch.triu(torch.ones_like(A2_pairwise), diagonal=1)
+
+            A1_pairwise = A1_pairwise[mask1.bool()]
+            A2_pairwise = A2_pairwise[mask2.bool()]
     
-            A1_pairwise = A1_pairwise[mask.bool()]
-            A2_pairwise = A2_pairwise[mask.bool()]
+            #A1_pairwise = A1_pairwise[mask.bool()]
+            #A2_pairwise = A2_pairwise[mask.bool()]
             A1_pairwise = A1_pairwise/(2*normA1)
             A2_pairwise = A2_pairwise/(2*normA2)
         elif self.mode =='dist':

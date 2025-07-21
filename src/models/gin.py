@@ -24,6 +24,7 @@ class GIN(nn.Module):
             if edge_attr_dim != 0 and self.use_edge_attr:
                 self.edge_encoder = BondEncoder(emb_dim=hidden_size) #IS THIS USING EDGES?
         else:
+            # input(f"We're using x_dim: {x_dim}")
             self.node_encoder = Linear(x_dim, hidden_size)
             if edge_attr_dim != 0 and self.use_edge_attr:
                 self.edge_encoder = Linear(edge_attr_dim, hidden_size)
