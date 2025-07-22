@@ -111,117 +111,163 @@ class GSAT(nn.Module):
         return loss, loss_dict
     
     def dual_forward_pass(self, primal_data, dual_data, epoch, training):
-        dual_emb = self.dual_clf.get_emb(dual_data.x, dual_data.edge_index, batch=dual_data.batch, edge_attr=dual_data.edge_attr)
-        dual_att_log_logits = self.dual_extractor(dual_emb, dual_data.edge_index, dual_data.batch)
-        dual_att = self.sampling(dual_att_log_logits, epoch, training)
+        #print("Running dual_forward")
+        if epoch <= 50:
+            #print("Running epoch le 50")
+            emb = self.primal_clf.get_emb(primal_data.x, primal_data.edge_index, batch=primal_data.batch, edge_attr=primal_data.edge_attr)
+            att_log_logits = self.primal_extractor(emb, primal_data.edge_index, primal_data.batch)
+            att = self.sampling(att_log_logits, epoch, training)
 
-        if self.dual_learn_edge_att:
-            if is_undirected(dual_data.edge_index):
-                dual_trans_idx, dual_trans_val = transpose(dual_data.edge_index, dual_att, None, None, coalesced=False)
-                dual_trans_val_perm = reorder_like(dual_trans_idx, dual_data.edge_index, dual_trans_val)
-                dual_edge_att = (dual_att + dual_trans_val_perm) / 2
+            if self.primal_learn_edge_att:
+                if is_undirected(primal_data.edge_index):
+                    trans_idx, trans_val = transpose(primal_data.edge_index, att, None, None, coalesced=False)
+                    trans_val_perm = reorder_like(trans_idx, primal_data.edge_index, trans_val)
+                    edge_att = (att + trans_val_perm) / 2
+                else:
+                    edge_att = att
             else:
-                dual_edge_att = dual_att
-        else:
-            dual_edge_att = self.lift_node_att_to_edge_att(dual_att, dual_data.edge_index)
+                edge_att = self.lift_node_att_to_edge_att(att, primal_data.edge_index)
 
-        dual_clf_logits = self.dual_clf(dual_data.x, dual_data.edge_index, dual_data.batch, edge_attr=dual_data.edge_attr, edge_atten=dual_edge_att)
-        dual_loss, dual_loss_dict = self.__loss__(dual_att, dual_clf_logits, dual_data.y, epoch)
+            clf_logits = self.primal_clf(primal_data.x, primal_data.edge_index, primal_data.batch, edge_attr=primal_data.edge_attr, edge_atten=edge_att)
+            primal_loss, primal_loss_dict = self.__loss__(att, clf_logits, primal_data.y, epoch)
 
-        primal_emb = self.primal_clf.get_emb(primal_data.x, primal_data.edge_index, batch=primal_data.batch, edge_attr=primal_data.edge_attr)
-        primal_att_log_logits = self.primal_extractor(primal_emb, primal_data.edge_index, primal_data.batch)
-        primal_att = self.sampling(primal_att_log_logits, epoch, training)
+            emb = self.dual_clf.get_emb(dual_data.x, dual_data.edge_index, batch=dual_data.batch, edge_attr=dual_data.edge_attr)
+            att_log_logits = self.dual_extractor(emb, dual_data.edge_index, dual_data.batch)
+            att = self.sampling(att_log_logits, epoch, training)
 
-
-        if self.primal_learn_edge_att:
-            if is_undirected(primal_data.edge_index):
-                primal_edge_att = dual_att
+            if self.dual_learn_edge_att:
+                if is_undirected(dual_data.edge_index):
+                    trans_idx, trans_val = transpose(dual_data.edge_index, att, None, None, coalesced=False)
+                    trans_val_perm = reorder_like(trans_idx, dual_data.edge_index, trans_val)
+                    dual_edge_att = (att + trans_val_perm) / 2
+                else:
+                    dual_edge_att = att
             else:
-                primal_edge_att = primal_att
-        else:
-            # print("\U0001F96D primal edge is not learn_edge_att")
-            primal_edge_att = dual_att
+                dual_edge_att = self.lift_node_att_to_edge_att(att, dual_data.edge_index)
 
-        primal_clf_logits = self.primal_clf(primal_data.x, primal_data.edge_index, primal_data.batch, edge_attr=primal_data.edge_attr, edge_atten=primal_edge_att)
-        primal_loss, primal_loss_dict = self.__loss__(primal_att, primal_clf_logits, primal_data.y, epoch) #should this be primal_att cause it doesn't generate?
+            dual_clf_logits = self.dual_clf(dual_data.x, dual_data.edge_index, dual_data.batch, edge_attr=dual_data.edge_attr, edge_atten=dual_edge_att)
+            dual_loss, dual_loss_dict = self.__loss__(att, clf_logits, dual_data.y, epoch)
 
-        loss = dual_loss + primal_loss
-        #loss_dict = primal_loss_dict + dual_loss_dict #dunno if this works
-        loss_dict = primal_loss_dict.copy()  # avoid modifying original dict
-        loss_dict.update(dual_loss_dict)
+            loss = primal_loss + dual_loss
 
-        return primal_edge_att, loss, loss_dict, primal_clf_logits
+            loss_dict = primal_loss_dict.copy()  # avoid modifying original dict
+            loss_dict.update(dual_loss_dict)
 
-    def forward_pass(self, data, epoch, training):
-        emb = self.primal_clf.get_emb(data.x, data.edge_index, batch=data.batch, edge_attr=data.edge_attr)
-        att_log_logits = self.primal_extractor(emb, data.edge_index, data.batch)
-        att = self.sampling(att_log_logits, epoch, training)
+            return edge_att, loss, loss_dict, clf_logits
+        else: 
+            #print("Running epoch g 50")
+            #CHATGPT ATTEMPT 3 - honestly working p well with like 0.6-0.7, occasionally 0.8 ish att_roc but still kinda bad cause 0.94 for the og gsat
+            primal_emb = self.primal_clf.get_emb(primal_data.x, primal_data.edge_index, batch=primal_data.batch, edge_attr=primal_data.edge_attr)
+            primal_att_log_logits = self.primal_extractor(primal_emb, primal_data.edge_index, primal_data.batch)
+            primal_node_att = self.sampling(primal_att_log_logits, epoch, training)
 
-        if self.primal_learn_edge_att:
-            if is_undirected(data.edge_index):
-                trans_idx, trans_val = transpose(data.edge_index, att, None, None, coalesced=False)
-                trans_val_perm = reorder_like(trans_idx, data.edge_index, trans_val)
-                edge_att = (att + trans_val_perm) / 2
-            else:
-                edge_att = att
-        else:
-            edge_att = self.lift_node_att_to_edge_att(att, data.edge_index)
+            primal_edge_att_from_nodes = self.lift_node_att_to_edge_att(primal_node_att, primal_data.edge_index)
 
-        clf_logits = self.primal_clf(data.x, data.edge_index, data.batch, edge_attr=data.edge_attr, edge_atten=edge_att)
-        loss, loss_dict = self.__loss__(att, clf_logits, data.y, epoch)
-        return edge_att, loss, loss_dict, clf_logits
+            dual_emb = self.dual_clf.get_emb(dual_data.x, dual_data.edge_index, batch=dual_data.batch, edge_attr=dual_data.edge_attr)
+            dual_att_log_logits = self.dual_extractor(dual_emb, dual_data.edge_index, dual_data.batch)
+            dual_edge_att = self.sampling(dual_att_log_logits, epoch, training)
+
+            alpha = 0.3  # tune this hyperparam
+            combined_edge_att = alpha * dual_edge_att + (1 - alpha) * primal_edge_att_from_nodes
+
+            primal_clf_logits = self.primal_clf(primal_data.x, primal_data.edge_index, primal_data.batch, edge_attr=primal_data.edge_attr, edge_atten=combined_edge_att)
+
+            clf_loss, clf_loss_dict = self.__loss__(combined_edge_att, primal_clf_logits, primal_data.y, epoch)
+            att_loss = F.mse_loss(primal_edge_att_from_nodes, dual_edge_att)
+
+            lambda_att = 0.5
+
+            loss = clf_loss + lambda_att * att_loss
+
+            return combined_edge_att, loss, clf_loss_dict, primal_clf_logits
+
+
+        #ATTEMPT 2 - not done
+        # dual_emb = self.dual_clf.get_emb(dual_data.x, dual_data.edge_index, batch=dual_data.batch, edge_attr=dual_data.edge_attr)
+        # dual_att_log_logits = self.dual_extractor(dual_emb, dual_data.edge_index, dual_data.batch)
+        # dual_att = self.sampling(dual_att_log_logits, epoch, training)
+
+        # if self.dual_learn_edge_att:
+        #     if is_undirected(dual_data.edge_index):
+        #         dual_trans_idx, dual_trans_val = transpose(dual_data.edge_index, dual_att, None, None, coalesced=False)
+        #         dual_trans_val_perm = reorder_like(dual_trans_idx, dual_data.edge_index, dual_trans_val)
+        #         dual_edge_att = (dual_att + dual_trans_val_perm) / 2
+        #     else:
+        #         dual_edge_att = dual_att
+        # else:
+        #     dual_edge_att = self.lift_node_att_to_edge_att(dual_att, dual_data.edge_index)
+
+        # dual_clf_logits = self.dual_clf(dual_data.x, dual_data.edge_index, dual_data.batch, edge_attr=dual_data.edge_attr, edge_atten=dual_edge_att)
+        # dual_loss, dual_loss_dict = self.__loss__(dual_att, dual_clf_logits, dual_data.y, epoch)
+
+        # primal_edge_att_from_dual = dual_att
+
+        # primal_emb = self.primal_clf.get_emb(primal_data.x, primal_data.edge_index, batch=primal_data.batch, edge_attr=primal_data.edge_attr)
+        # primal_att_log_logits = self.primal_extractor(primal_emb, primal_data.edge_index, primal_data.batch)
+        # primal_att = self.sampling(primal_att_log_logits, epoch, training)
+
+
+        # if self.primal_learn_edge_att:
+        #     if is_undirected(primal_data.edge_index):
+        #         primal_trans_idx, primal_trans_val = transpose(primal_data.edge_index, primal_att, None, None, coalesced=False)
+        #         primal_trans_val_perm = reorder_like(primal_trans_idx, primal_data.edge_index, primal_trans_val)
+        #         primal_edge_att = (primal_att + primal_trans_val_perm) / 2
+        #     else:
+        #         primal_edge_att = primal_att
+        # else:
+        #     # print("\U0001F96D primal edge is not learn_edge_att")
+        #     primal_edge_att_from_primal = self.lift_node_att_to_edge_att(primal_att, primal_data.edge_index)
+
+        # alpha = 0.5 #hyperparam
+        # primal_edge_att = alpha * primal_edge_att_from_dual + (1 - alpha) * primal_edge_att_from_primal
+
+        # primal_clf_logits = self.primal_clf(primal_data.x, primal_data.edge_index, primal_data.batch, edge_attr=primal_data.edge_attr, edge_atten=primal_edge_att)
+        # primal_loss, primal_loss_dict = self.__loss__(primal_att, primal_clf_logits, primal_data.y, epoch)
+
+                
+        #ATTEMPT 1# - ABT 0.5-0.6 att_roc so didnt work well
+        # dual_emb = self.dual_clf.get_emb(dual_data.x, dual_data.edge_index, batch=dual_data.batch, edge_attr=dual_data.edge_attr)
+        # dual_att_log_logits = self.dual_extractor(dual_emb, dual_data.edge_index, dual_data.batch)
+        # dual_att = self.sampling(dual_att_log_logits, epoch, training)
+
+        # if self.dual_learn_edge_att:
+        #     if is_undirected(dual_data.edge_index):
+        #         dual_trans_idx, dual_trans_val = transpose(dual_data.edge_index, dual_att, None, None, coalesced=False)
+        #         dual_trans_val_perm = reorder_like(dual_trans_idx, dual_data.edge_index, dual_trans_val)
+        #         dual_edge_att = (dual_att + dual_trans_val_perm) / 2
+        #     else:
+        #         dual_edge_att = dual_att
+        # else:
+        #     dual_edge_att = self.lift_node_att_to_edge_att(dual_att, dual_data.edge_index)
+
+        # dual_clf_logits = self.dual_clf(dual_data.x, dual_data.edge_index, dual_data.batch, edge_attr=dual_data.edge_attr, edge_atten=dual_edge_att)
+        # dual_loss, dual_loss_dict = self.__loss__(dual_att, dual_clf_logits, dual_data.y, epoch)
+
+        # primal_emb = self.primal_clf.get_emb(primal_data.x, primal_data.edge_index, batch=primal_data.batch, edge_attr=primal_data.edge_attr)
+        # primal_att_log_logits = self.primal_extractor(primal_emb, primal_data.edge_index, primal_data.batch)
+        # primal_att = self.sampling(primal_att_log_logits, epoch, training)
+
+
+        # if self.primal_learn_edge_att:
+        #     if is_undirected(primal_data.edge_index):
+        #         primal_edge_att = dual_att
+        #     else:
+        #         primal_edge_att = primal_att
+        # else:
+        #     # print("\U0001F96D primal edge is not learn_edge_att")
+        #     primal_edge_att = dual_att
+
+        # primal_clf_logits = self.primal_clf(primal_data.x, primal_data.edge_index, primal_data.batch, edge_attr=primal_data.edge_attr, edge_atten=primal_edge_att)
+        # primal_loss, primal_loss_dict = self.__loss__(primal_att, primal_clf_logits, primal_data.y, epoch) #should this be primal_att cause it doesn't generate?
+
+        # loss = dual_loss + primal_loss
+        # #loss_dict = primal_loss_dict + dual_loss_dict #dunno if this works
+        # loss_dict = primal_loss_dict.copy()  # avoid modifying original dict
+        # loss_dict.update(dual_loss_dict)
+
+        # return primal_edge_att, loss, loss_dict, primal_clf_logits
 
     @torch.no_grad()
-    def eval_one_batch(self, data, epoch):
-        self.primal_extractor.eval()
-        self.primal_clf.eval()
-
-        att, loss, loss_dict, clf_logits = self.forward_pass(data, epoch, training=False)
-        return att.data.cpu().reshape(-1), loss_dict, clf_logits.data.cpu()
-
-    def train_one_batch(self, data, epoch): #implement dual primal in forward pass or in GNN Layer
-        self.extractor.train()
-        self.clf.train()
-
-        att, loss, loss_dict, clf_logits = self.forward_pass(data, epoch, training=True)
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-        return att.data.cpu().reshape(-1), loss_dict, clf_logits.data.cpu()
-
-    def run_one_epoch(self, data_loader, epoch, phase, use_edge_attr):
-        loader_len = len(data_loader)
-        run_one_batch = self.train_one_batch if phase == 'train' else self.eval_one_batch
-        phase = 'test ' if phase == 'test' else phase  # align tqdm desc bar
-
-        all_loss_dict = {}
-        all_exp_labels, all_att, all_clf_labels, all_clf_logits, all_precision_at_k = ([] for i in range(5))
-        pbar = tqdm(data_loader)
-        for idx, data in enumerate(pbar):
-            data = process_data(data, use_edge_attr)
-            att, loss_dict, clf_logits = run_one_batch(data.to(self.device), epoch)
-
-            exp_labels = data.edge_label.data.cpu()
-            precision_at_k = self.get_precision_at_k(att, exp_labels, self.k, data.batch, data.edge_index)
-            desc, _, _, _, _, _ = self.log_epoch(epoch, phase, loss_dict, exp_labels, att, precision_at_k,
-                                                 data.y.data.cpu(), clf_logits, batch=True)
-            for k, v in loss_dict.items():
-                all_loss_dict[k] = all_loss_dict.get(k, 0) + v
-
-            all_exp_labels.append(exp_labels), all_att.append(att), all_precision_at_k.extend(precision_at_k)
-            all_clf_labels.append(data.y.data.cpu()), all_clf_logits.append(clf_logits)
-
-            if idx == loader_len - 1:
-                all_exp_labels, all_att = torch.cat(all_exp_labels), torch.cat(all_att),
-                all_clf_labels, all_clf_logits = torch.cat(all_clf_labels), torch.cat(all_clf_logits)
-
-                for k, v in all_loss_dict.items():
-                    all_loss_dict[k] = v / loader_len
-                desc, att_auroc, precision, clf_acc, clf_roc, avg_loss = self.log_epoch(epoch, phase, all_loss_dict, all_exp_labels, all_att,
-                                                                                        all_precision_at_k, all_clf_labels, all_clf_logits, batch=False)
-            pbar.set_description(desc)
-        return att_auroc, precision, clf_acc, clf_roc, avg_loss
-    
     def dual_eval_one_batch(self, primal_data, dual_data, epoch):
         self.primal_extractor.eval()
         self.primal_clf.eval()
@@ -363,7 +409,7 @@ class GSAT(nn.Module):
                 if self.primal_multi_label:
                     raise NotImplementedError
                 for idx, tag in viz_set:
-                    self.visualize_results(primal_test_set, idx, epoch, tag, use_edge_attr)
+                    self.visualize_results(primal_test_set, dual_test_set, idx, epoch, tag, use_edge_attr)
 
             if epoch == self.primal_epochs - 1:
                 save_checkpoint(self.primal_clf, self.primal_model_dir, model_name='gsat_clf_epoch_' + str(epoch))
@@ -522,34 +568,41 @@ class GSAT(nn.Module):
             res.append((idx, tag))
         return res
 
-    def visualize_results(self, test_set, idx, epoch, tag, use_edge_attr):
-        viz_set = test_set[idx]
-        data = next(iter(DataLoader(viz_set, batch_size=len(idx), shuffle=False)))
-        data = process_data(data, use_edge_attr)
-        batch_att, _, clf_logits = self.eval_one_batch(data.to(self.primal_device), epoch)
+    def visualize_results(self, primal_test_set, dual_test_set, idx, epoch, tag, use_edge_attr):
+        primal_viz_set = primal_test_set[idx]
+        dual_viz_set = dual_test_set[idx]
+
+        primal_data = next(iter(DataLoader(primal_viz_set, batch_size=len(idx), shuffle=False)))
+        primal_data = process_data(primal_data, use_edge_attr)
+
+        dual_data = next(iter(DataLoader(dual_viz_set, batch_size=len(idx), shuffle=False)))
+        dual_data = process_data(dual_data, use_edge_attr)
+
+        print("AGHHHH WHY DO YOU DO THIS TO MEEEE")
+        batch_att, _, clf_logits = self.dual_eval_one_batch(primal_data.to(self.primal_device), dual_data.to(self.dual_device), epoch)
         imgs = []
-        for i in tqdm(range(len(viz_set))):
+        for i in tqdm(range(len(primal_viz_set))):
             mol_type, coor = None, None
             if self.primal_dataset_name == 'mutag':
                 node_dict = {0: 'C', 1: 'O', 2: 'Cl', 3: 'H', 4: 'N', 5: 'F', 6: 'Br', 7: 'S', 8: 'P', 9: 'I', 10: 'Na', 11: 'K', 12: 'Li', 13: 'Ca'}
-                mol_type = {k: node_dict[v.item()] for k, v in enumerate(viz_set[i].node_type)}
+                mol_type = {k: node_dict[v.item()] for k, v in enumerate(primal_viz_set[i].node_type)}
             elif self.primal_dataset_name == 'Graph-SST2':
-                mol_type = {k: v for k, v in enumerate(viz_set[i].sentence_tokens)}
-                num_nodes = data.x.shape[0]
+                mol_type = {k: v for k, v in enumerate(primal_viz_set[i].sentence_tokens)}
+                num_nodes = primal_data.x.shape[0]
                 x = np.linspace(0, 1, num_nodes)
                 y = np.ones_like(x)
                 coor = np.stack([x, y], axis=1)
             elif self.primal_dataset_name == 'ogbg_molhiv':
-                element_idxs = {k: int(v+1) for k, v in enumerate(viz_set[i].x[:, 0])}
+                element_idxs = {k: int(v+1) for k, v in enumerate(primal_viz_set[i].x[:, 0])}
                 mol_type = {k: Chem.PeriodicTable.GetElementSymbol(Chem.GetPeriodicTable(), int(v)) for k, v in element_idxs.items()}
             elif self.primal_dataset_name == 'mnist':
                 raise NotImplementedError
 
-            node_subset = data.batch == i
-            _, edge_att = subgraph(node_subset, data.edge_index, edge_attr=batch_att)
+            node_subset = primal_data.batch == i
+            _, edge_att = subgraph(node_subset, primal_data.edge_index, edge_attr=batch_att)
 
-            node_label = viz_set[i].node_label.reshape(-1) if viz_set[i].get('node_label', None) is not None else torch.zeros(viz_set[i].x.shape[0])
-            fig, img = visualize_a_graph(viz_set[i].edge_index, edge_att, node_label, self.primal_dataset_name, norm=self.primal_viz_norm_att, mol_type=mol_type, coor=coor)
+            node_label = primal_viz_set[i].node_label.reshape(-1) if primal_viz_set[i].get('node_label', None) is not None else torch.zeros(primal_viz_set[i].x.shape[0])
+            fig, img = visualize_a_graph(primal_viz_set[i].edge_index, edge_att, node_label, self.primal_dataset_name, norm=self.primal_viz_norm_att, mol_type=mol_type, coor=coor)
             imgs.append(img)
         imgs = np.stack(imgs)
         self.primal_writer.add_images(tag, imgs, epoch, dataformats='NHWC')

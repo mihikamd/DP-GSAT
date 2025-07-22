@@ -20,28 +20,76 @@ def read_ba2motif_data(folder: str, prefix):
     with open(os.path.join(folder, f"{prefix}.pkl"), 'rb') as f:
         dense_edges, node_features, graph_labels = pickle.load(f)
 
+    # print(dense_edges.shape) #(1000, 25, 25)
+    # print(node_features.shape) # (1000, 25, 10)
+
+    # creating new dense edges, replaces 0,1 with numbered edges, adjacency matrix 1 if in the same row
+    numbered_edges = dense_edges.copy()
+
+    dual_dense_edges_list = []
+    dual_node_features_list = []
+    dual_node_label_lists = []
+    dual_features_dim  = node_features.shape[2]*2
+
+
+    for graph_idx, graph in enumerate(numbered_edges):
+        edge_num = 0
+        total_edges = int((graph.sum() / 2).item())
+        graph -= 2
+        dual_node_features = np.zeros((total_edges, dual_features_dim))
+        dual_node_label = torch.zeros(total_edges).float()
+
+        for node1 in range(graph.shape[0]):
+            for node2 in range(graph.shape[1]):
+               if (graph[node1][node2]) == -1 and node1 != node2:
+                   graph[node1][node2] = edge_num
+                   graph[node2][node1] = edge_num
+                   if(node1 >= 20 and node2 >= 20):
+                       dual_node_label[edge_num] = 1
+                   dual_node_features[edge_num] = np.concatenate((node_features[graph_idx, node1],node_features[graph_idx, node2]), axis=0)
+                   edge_num+=1
+
+        dual_dense = np.zeros((edge_num, edge_num))
+        for row in graph:
+            edges = row[row != -2]
+            for i in edges:
+                for j in edges:
+                    if i!=j:
+                        dual_dense[int(i),int(j)] = 1
+
+        dual_dense_edges_list.append(dual_dense)
+        dual_node_features_list.append(dual_node_features)
+        dual_node_label_lists.append(dual_node_label)
+
+    # creating new node_features
+    
     data_list = []
-    for graph_idx in range(dense_edges.shape[0]):
-        x = torch.from_numpy(node_features[graph_idx]).float()
-        edge_index = dense_to_sparse(torch.from_numpy(dense_edges[graph_idx]))[0]
+    for graph_idx, graph in enumerate(dual_dense_edges_list):
+        x = torch.from_numpy(dual_node_features_list[graph_idx]).float()
+        edge_index = dense_to_sparse(torch.from_numpy(dual_dense_edges_list[graph_idx]))[0]
         y = torch.from_numpy(np.where(graph_labels[graph_idx])[0]).reshape(-1, 1).float()
 
-        node_label = torch.zeros(x.shape[0]).float()
-        node_label[20:] = 1
-        edge_label = ((edge_index[0] >= 20) & (edge_index[0] < 25) & (edge_index[1] >= 20) & (edge_index[1] < 25)).float()
+        dual_node_label = dual_node_label_lists[graph_idx]
+        dual_edge_label = torch.zeros((edge_index.shape[1]))
+        
+        for edge_idx in range(edge_index.shape[1]):
+            i = edge_index[0, edge_idx]
+            j = edge_index[1, edge_idx]
+            if dual_node_label[i] == 1 and dual_node_label[j] == 1:
+                dual_edge_label[edge_idx] = 1
 
         # if graph_idx < 10:
         #     edge_att = torch.ones(edge_index.shape[1])
         #     fig, ax = plt.subplots()
-        #     fig.canvas.manager.set_window_title(f"Primal Graph {graph_idx}")
+        #     fig.canvas.manager.set_window_title(f"Dual Graph {graph_idx}")
                     
-        #     visualize_a_graph(edge_index, edge_att, node_label, 'ba_2motifs', ax, coor=None, norm=False, mol_type=None, nodesize=300)
+        #     visualize_a_graph(edge_index, edge_att, dual_node_label, 'ba_2motifs', ax, coor=None, norm=False, mol_type=None, nodesize=300)
                     
         #     plt.show(block=True)
         #     plt.close(fig)
         #     input("continue to next graph")
 
-        data_list.append(Data(x=x, edge_index=edge_index, y=y, node_label=node_label, edge_label=edge_label))
+        data_list.append(Data(x=x, edge_index=edge_index, y=y, node_label=dual_node_label, edge_label=dual_edge_label))
     return data_list
 
 

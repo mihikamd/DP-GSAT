@@ -145,7 +145,7 @@ class Mutag_Dual(InMemoryDataset):
                 # print("\U0001F96D node_label.shape:", node_label.shape)
                 # print("\U0001F96D I:", i)
                 #try:
-                if i < 5:
+                if i < 10:
                     # edge_index = torch.tensor([[0, 1, 0, 2, 1, 3],
                     #        [1, 0, 2, 0, 3, 1]], dtype=torch.long)
                     num_unique = torch.unique(edge_index).numel()
@@ -154,8 +154,13 @@ class Mutag_Dual(InMemoryDataset):
                     edge_att = torch.ones(edge_index.shape[1])
                     # node_label = torch.zeros(4)
                     node_label = torch.zeros(num_unique)
+
+                    #edge_labels = [f"{int(u.item())}-{int(v.item())}" for u, v in edge_index.t()]
+
+                    #edge_labels = torch.tensor(edge_labels)
+
                     fig, ax = plt.subplots()
-                    fig.canvas.manager.set_window_title(f"Dual Graph v2 {i}")
+                    fig.canvas.manager.set_window_title(f"Dual Graph {i}")
                     # print("\U0001F96D edge_index:", edge_index)
                     # print("\U0001F96D edge_att:", edge_att)
                     # print("\U0001F96D node_label:", node_label)
@@ -264,6 +269,9 @@ class Mutag_Dual(InMemoryDataset):
         # print("\U0001F96D next dual_nodes:", dual_nodes) 
 
         dual_dict = {tuple(pair): (idx // 2) + 1 for idx, pair in enumerate(dual_nodes)} # for each edge pair duplicate they share one index
+
+        assert len(set(dual_dict.values())) == (len(dual_nodes) // 2)
+
         #dual_dict = {tuple(pair): idx + 1 for idx, pair in enumerate(dual_nodes)} 
         # print("\U0001F96D next dual_dict:", dual_dict) 
         # print("\U0001F96D len(next dual_dict):", len(dual_dict)) # 266894
@@ -643,7 +651,15 @@ def visualize_a_graph(edge_index, edge_att, node_label, dataset_name, ax, coor=N
     else:
         nx.draw_networkx_edges(G, pos, width=1, edge_color='gray', arrows=False, alpha=0.1, ax=ax, connectionstyle='arc3,rad=0.4')
 
+    # if isinstance(node_label[0], str):
+    #     # Use custom string labels
+    #     labels = {i: node_label[i] for i in range(len(node_label))}
+    # else:
+    #     # Fall back to integer/float labels
+    #     labels = {i: f"{int(node_label[i])}" if node_label[i] == int(node_label[i]) else f"{node_label[i]:.2f}" for i in range(len(node_label))}
+
     labels = {i: str(i) for i in G.nodes}
+
     nx.draw_networkx_labels(G, pos, labels, font_size=12, ax=ax)
 
     # Get all x and y positions from the layout

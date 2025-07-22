@@ -12,7 +12,7 @@ model_config:
   n_layers: 2
   dropout_p: 0.3
   pretrain_lr: 1.0e-3
-  pretrain_epochs:  100
+  pretrain_epochs:  300
 
 shared_config:
   learn_edge_att: false #should this be true
@@ -26,7 +26,7 @@ GSAT_config:
   method_name: 'GSAT'
   pred_loss_coef: 1
   info_loss_coef: 1
-  epochs: 100
+  epochs: 300
   lr: 1.0e-3
 
   from_scratch: true

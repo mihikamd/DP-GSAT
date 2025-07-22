@@ -31,7 +31,7 @@ def get_data_loaders(data_dir, dataset_name, batch_size, splits, random_state, m
 
     elif dataset_name == 'mutag':
         dataset = Mutag(root=data_dir / 'mutag')
-        split_idx = get_random_split_idx(dataset, splits, random_state = 41, mutag_x=mutag_x)
+        split_idx = get_random_split_idx(dataset, splits, random_state=random_state, mutag_x=mutag_x)
         loaders, test_set = get_loaders_and_test_set(batch_size, dataset=dataset, split_idx=split_idx)
         print("\U0001F96D HERE GOD DAMNIT IM HERE") #MANGO
         train_set = dataset[split_idx['train']]
