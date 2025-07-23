@@ -36,60 +36,67 @@ class Mutag(InMemoryDataset):
         with open(self.raw_dir + '/Mutagenicity.pkl', 'rb') as fin:
             _, original_features, original_labels = pkl.load(fin)
 
-        edge_lists, graph_labels, edge_label_lists, node_type_lists = self.get_graph_data()
+        #needs to be synced up to mutag_dual
+        with open(self.raw_dir + "/mask_log.txt", "w") as file:
 
-        data_list = []
-        for i in range(original_labels.shape[0]):
-            num_nodes = len(node_type_lists[i])
-            edge_index = torch.tensor(edge_lists[i], dtype=torch.long).T
+            edge_lists, graph_labels, edge_label_lists, node_type_lists = self.get_graph_data()
 
-            y = torch.tensor(graph_labels[i]).float().reshape(-1, 1)
-            x = torch.tensor(original_features[i][:num_nodes]).float()
-            assert original_features[i][num_nodes:].sum() == 0
-            edge_label = torch.tensor(edge_label_lists[i]).float()
-            if y.item() != 0:
-                edge_label = torch.zeros_like(edge_label).float()
+            data_list = []
+            for i in range(original_labels.shape[0]):
+                num_nodes = len(node_type_lists[i])
+                edge_index = torch.tensor(edge_lists[i], dtype=torch.long).T
 
-            node_label = torch.zeros(x.shape[0])
-            signal_nodes = list(set(edge_index[:, edge_label.bool()].reshape(-1).tolist()))
-            if y.item() == 0:
-                node_label[signal_nodes] = 1
+                y = torch.tensor(graph_labels[i]).float().reshape(-1, 1)
+                x = torch.tensor(original_features[i][:num_nodes]).float()
+                assert original_features[i][num_nodes:].sum() == 0
+                edge_label = torch.tensor(edge_label_lists[i]).float()
+                if y.item() != 0:
+                    edge_label = torch.zeros_like(edge_label).float()
 
-            if len(signal_nodes) != 0:
-                node_type = torch.tensor(node_type_lists[i])
-                node_type = set(node_type[signal_nodes].tolist())
-                assert node_type in ({4, 1}, {4, 3}, {4, 1, 3})  # NO or NH
+                node_label = torch.zeros(x.shape[0])
+                signal_nodes = list(set(edge_index[:, edge_label.bool()].reshape(-1).tolist()))
+                if y.item() == 0:
+                    node_label[signal_nodes] = 1
 
-            if y.item() == 0 and len(signal_nodes) == 0:
-                continue
+                if len(signal_nodes) != 0:
+                    node_type = torch.tensor(node_type_lists[i])
+                    node_type = set(node_type[signal_nodes].tolist())
+                    assert node_type in ({4, 1}, {4, 3}, {4, 1, 3})  # NO or NH
 
-            if i<5:
-                # print("\U0001F96D node_label.shape:", node_label.shape)
-                # print("\U0001F96D I:", i)
-                #try:
-                if i < 5:
-                    # edge_index = torch.tensor([[0, 1, 0, 2, 1, 3],
-                    #        [1, 0, 2, 0, 3, 1]], dtype=torch.long)
-                    num_unique = torch.unique(edge_index).numel()
-                    # print("unique:", torch.unique(edge_index))
-                    # print ("\U0001F96D num_unique", num_unique)
-                    edge_att = torch.ones(edge_index.shape[1])
-                    # node_label = torch.zeros(4)
-                    #node_label = torch.zeros(num_unique)
-                    fig, ax = plt.subplots()
-                    fig.canvas.manager.set_window_title(f"Primal Graph v2 {i}")
-                    # print("\U0001F96D edge_index:", edge_index)
-                    # print("\U0001F96D edge_att:", edge_att)
-                    # print("\U0001F96D node_label:", node_label)
-                    # print("\U0001F96D node_label.size(0)", node_label.size(0))
-                    
-                    visualize_a_graph(edge_index, edge_att, node_label, 'mutag', ax, coor=None, norm=False, mol_type=None, nodesize=300)
-                    
-                    plt.show(block=True)
-                    plt.close(fig)
+                if y.item() == 0 and len(signal_nodes) == 0:
+                    file.write("0\n")
+                    continue
+                
+                file.write("1\n")
+                if i<5:
+                    # print("\U0001F96D node_label.shape:", node_label.shape)
+                    # print("\U0001F96D I:", i)
+                    #try:
+                    if i < 5:
+                        # edge_index = torch.tensor([[0, 1, 0, 2, 1, 3],
+                        #        [1, 0, 2, 0, 3, 1]], dtype=torch.long)
+                        num_unique = torch.unique(edge_index).numel()
+                        # print("unique:", torch.unique(edge_index))
+                        # print ("\U0001F96D num_unique", num_unique)
+                        edge_att = torch.ones(edge_index.shape[1])
+                        # node_label = torch.zeros(4)
+                        #node_label = torch.zeros(num_unique)
+                        fig, ax = plt.subplots()
+                        fig.canvas.manager.set_window_title(f"Primal Graph v2 {i}")
+                        # print("\U0001F96D edge_index:", edge_index)
+                        # print("\U0001F96D edge_att:", edge_att)
+                        # print("\U0001F96D node_label:", node_label)
+                        # print("\U0001F96D node_label.size(0)", node_label.size(0))
+                        
+                        visualize_a_graph(edge_index, edge_att, node_label, 'mutag', ax, coor=None, norm=False, mol_type=None, nodesize=300)
+                        
+                        plt.show(block=True)
+                        plt.close(fig)
 
-            data_list.append(Data(x=x, y=y, edge_index=edge_index, node_label=node_label, edge_label=edge_label, node_type=torch.tensor(node_type_lists[i])))
+                data_list.append(Data(x=x, y=y, edge_index=edge_index, node_label=node_label, edge_label=edge_label, node_type=torch.tensor(node_type_lists[i])))
 
+        print("len_primal_datalist: ", len(data_list))
+        input("continue check primal len")
         data, slices = self.collate(data_list)
         torch.save((data, slices), self.processed_paths[0])
 

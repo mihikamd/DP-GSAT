@@ -167,7 +167,7 @@ class GSAT(nn.Module):
             dual_att_log_logits = self.dual_extractor(dual_emb, dual_data.edge_index, dual_data.batch)
             dual_edge_att = self.sampling(dual_att_log_logits, epoch, training)
 
-            alpha = 0.3  # tune this hyperparam
+            alpha = 0.5  # tune this hyperparam
             combined_edge_att = alpha * dual_edge_att + (1 - alpha) * primal_edge_att_from_nodes
 
             primal_clf_logits = self.primal_clf(primal_data.x, primal_data.edge_index, primal_data.batch, edge_attr=primal_data.edge_attr, edge_atten=combined_edge_att)
@@ -694,7 +694,7 @@ def train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_nam
     loaders, primal_test_set, x_dim, edge_attr_dim, num_class, aux_info = get_data_loaders(data_dir, dataset_name, batch_size, splits, random_state, data_config.get('mutag_x', False))
 
     #DUAL
-    dual_loaders, dual_test_set, dual_x_dim, dual_edge_attr_dim, dual_num_class, dual_aux_info = get_data_loaders(data_dir, 'dual_mutag', batch_size, splits, random_state, data_config.get('mutag_x', False))
+    dual_loaders, dual_test_set, dual_x_dim, dual_edge_attr_dim, dual_num_class, dual_aux_info = get_data_loaders(data_dir, dual_dataset_name, batch_size, splits, random_state, data_config.get('mutag_x', False))
     
     #input(dual_x_dim)
     #DUAL

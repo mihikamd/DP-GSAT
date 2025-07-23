@@ -93,7 +93,7 @@ def read_ba2motif_data(folder: str, prefix):
     return data_list
 
 
-class SynGraphDataset(InMemoryDataset):
+class SynGraphDataset_Dual(InMemoryDataset):
     r"""
     The Synthetic datasets used in
     `Parameterized Explainer for Graph Neural Network <https://arxiv.org/abs/2011.04573>`_.
@@ -119,12 +119,13 @@ class SynGraphDataset(InMemoryDataset):
         'ba_community': ['BA_Community', 'BA_Community.pkl', 'BA_Community'],
         'tree_grid': ['Tree_Grid', 'Tree_Grid.pkl', 'Tree_Grid'],
         'tree_cycle': ['Tree_Cycle', 'Tree_Cycles.pkl', 'Tree_Cycles'],
-        'ba_2motifs': ['BA_2Motifs', 'BA_2Motifs.pkl', 'BA_2Motifs']
+        'ba_2motifs': ['BA_2Motifs', 'BA_2Motifs.pkl', 'BA_2Motifs'],
+        'ba_2motifs_dual': ['BA_2Motifs_Dual', 'BA_2Motifs.pkl', 'BA_2Motifs']
     }
 
     def __init__(self, root, name, transform=None, pre_transform=None):
         self.name = name.lower()
-        super(SynGraphDataset, self).__init__(root, transform, pre_transform)
+        super(SynGraphDataset_Dual, self).__init__(root, transform, pre_transform)
         self.process()
         self.data, self.slices = torch.load(self.processed_paths[0])
 
@@ -149,7 +150,7 @@ class SynGraphDataset(InMemoryDataset):
         download_url(url, self.raw_dir)
 
     def process(self):
-        if self.name.lower() == 'BA_2Motifs'.lower():
+        if self.name.lower() == 'BA_2Motifs_dual'.lower():
             data_list = read_ba2motif_data(self.raw_dir, self.names[self.name][2])
 
             if self.pre_filter is not None:

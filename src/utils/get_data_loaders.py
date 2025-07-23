@@ -5,7 +5,7 @@ from torch_geometric.utils import degree
 from torch_geometric.loader import DataLoader
 
 from ogb.graphproppred import PygGraphPropPredDataset
-from datasets import SynGraphDataset, Mutag, SPMotif, MNIST75sp, graph_sst2, Mutag_Dual
+from datasets import SynGraphDataset, SynGraphDataset_Dual, Mutag, SPMotif, MNIST75sp, graph_sst2, Mutag_Dual
 
 #from trainer import run_one_epoch, update_best_epoch_res, get_viz_idx, visualize_results # MANGO
 
@@ -18,14 +18,20 @@ from rdkit import Chem #MANGO
 
 def get_data_loaders(data_dir, dataset_name, batch_size, splits, random_state, mutag_x=False):
     multi_label = False
-    assert dataset_name in ['ba_2motifs', 'mutag', 'dual_mutag', 'Graph-SST2', 'mnist',
+    assert dataset_name in ['ba_2motifs', 'ba_2motifs_dual', 'mutag', 'mutag_dual', 'Graph-SST2', 'mnist',
                             'spmotif_0.5', 'spmotif_0.7', 'spmotif_0.9',
                             'ogbg_molhiv', 'ogbg_moltox21', 'ogbg_molbace',
                             'ogbg_molbbbp', 'ogbg_molclintox', 'ogbg_molsider']
 
     if dataset_name == 'ba_2motifs':
         dataset = SynGraphDataset(data_dir, 'ba_2motifs')
-        split_idx = get_random_split_idx(dataset, splits)
+        split_idx = get_random_split_idx(dataset, splits, random_state=random_state)
+        loaders, test_set = get_loaders_and_test_set(batch_size, dataset=dataset, split_idx=split_idx)
+        train_set = dataset[split_idx["train"]]
+
+    elif dataset_name == 'ba_2motifs_dual':
+        dataset = SynGraphDataset_Dual(data_dir, 'ba_2motifs_dual')
+        split_idx = get_random_split_idx(dataset, splits, random_state=random_state)
         loaders, test_set = get_loaders_and_test_set(batch_size, dataset=dataset, split_idx=split_idx)
         train_set = dataset[split_idx["train"]]
 
@@ -36,9 +42,9 @@ def get_data_loaders(data_dir, dataset_name, batch_size, splits, random_state, m
         print("\U0001F96D HERE GOD DAMNIT IM HERE") #MANGO
         train_set = dataset[split_idx['train']]
 
-    elif dataset_name == 'dual_mutag':
+    elif dataset_name == 'mutag_dual':
         dataset = Mutag_Dual(root=data_dir / 'mutag_dual') #MANGO
-        split_idx = get_random_split_idx(dataset, splits, random_state = 41, mutag_x=mutag_x)
+        split_idx = get_random_split_idx(dataset, splits, random_state=random_state, mutag_x=mutag_x)
         loaders, test_set = get_loaders_and_test_set(batch_size, dataset=dataset, split_idx=split_idx) #MANGO
         print("\U0001F96D HERE CRAP FUCKING BUCKETS") #MANGO
         train_set = dataset[split_idx['train']] #MANGO

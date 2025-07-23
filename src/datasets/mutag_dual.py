@@ -23,7 +23,7 @@ class Mutag_Dual(InMemoryDataset):
     def raw_file_names(self):
         return ['Mutagenicity_A.txt', 'Mutagenicity_edge_gt.txt', 'Mutagenicity_edge_labels.txt',
                 'Mutagenicity_graph_indicator.txt', 'Mutagenicity_graph_labels.txt', 'Mutagenicity_label_readme.txt',
-                'Mutagenicity_node_labels.txt', 'Mutagenicity.pkl']
+                'Mutagenicity_node_labels.txt', 'Mutagenicity.pkl', 'mask_log.txt']
 
     @property
     def processed_file_names(self):
@@ -35,6 +35,8 @@ class Mutag_Dual(InMemoryDataset):
     def process(self):
         with open(self.raw_dir + '/Mutagenicity.pkl', 'rb') as fin:
             _, original_features, original_labels = pkl.load(fin)
+
+        mask_log = np.loadtxt(self.raw_dir + '/mask_log.txt', delimiter=',').astype(np.int32)
 
         dual_edge_lists, graph_labels, dual_node_gt_lists, dual_node_label_lists, dual_node_lists = self.get_graph_data()
 
@@ -125,14 +127,10 @@ class Mutag_Dual(InMemoryDataset):
             #     node_type = set(node_type[signal_nodes].tolist())
             #     assert node_type in ({4, 1}, {4, 3}, {4, 1, 3})  # MANGO NO or NH; Checks that signal nodes are the right node type
 
-            # if y.item() == 0 and len(signal_nodes) == 0: #SKIP THIS 
-            #     continue
+            if mask_log[i] == 0: 
+                continue
 
             edge_label = torch.zeros(edge_index.size(1), dtype=torch.float)
-            if x.shape[0] == 0 or edge_index.shape[1] == 0:
-                #print(f"\U0001F96D Skipping empty graph {i}")
-                continue
-                
             node_type = torch.tensor(dual_features[i][:num_nodes]).float()
             # print("\U0001F96D x.shape: ", x.shape)
             # print("\U0001F96D y.shape: ", y.shape)
@@ -178,6 +176,8 @@ class Mutag_Dual(InMemoryDataset):
 
             data_list.append(Data(x=x, y=y, edge_index=edge_index, node_label=node_label, edge_label=edge_label, node_type = node_type))
 
+        print("len_dual_datalist: ", len(data_list))
+        input("continue on dual len")
         # dual_edge_lists[0] = [(1, 2), (2,1), (1, 4), (4,1), (2, 4), (4,2), (1, 3), (3,1), (1, 5), (5,1), (3, 5), (5,3), (2, 5), (5,2), (3, 4), (4,3)]
         # primal_edges = np.array([
         #     [1,2],
