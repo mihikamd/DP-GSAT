@@ -23,6 +23,7 @@ from sklearn.manifold import TSNE
 
 #from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
+import seaborn as sns
 
 from pretrain_clf import train_clf_one_seed
 from utils import Writer, Criterion, MLP, visualize_a_graph, save_checkpoint, load_checkpoint, get_preds, get_lr, set_seed, process_data
@@ -98,89 +99,297 @@ class GSAT(nn.Module):
         self.dual_multi_label = dual_multi_label
         self.dual_criterion = Criterion(dual_num_class, dual_multi_label)
 
-    def __loss__(self, att, clf_logits, clf_labels, epoch): #just used primal self. for all of this
-        pred_loss = self.primal_criterion(clf_logits, clf_labels)
+    def __loss__(self, primal_att, dual_att, primal_clf_logits, dual_clf_logits, primal_clf_labels, dual_clf_labels, epoch): #just used primal self. for all of this
+        primal_pred_loss = self.primal_criterion(primal_clf_logits, primal_clf_labels)
 
-        r = self.primal_fix_r if self.primal_fix_r else self.get_r(self.primal_decay_interval, self.primal_decay_r, epoch, final_r=self.primal_final_r, init_r=self.primal_init_r)
-        info_loss = (att * torch.log(att/r + 1e-6) + (1-att) * torch.log((1-att)/(1-r+1e-6) + 1e-6)).mean()
+        dual_pred_loss = self.dual_criterion(dual_clf_logits, dual_clf_labels)
 
-        pred_loss = pred_loss * self.primal_pred_loss_coef
-        info_loss = info_loss * self.primal_info_loss_coef
-        loss = pred_loss + info_loss
-        loss_dict = {'loss': loss.item(), 'pred': pred_loss.item(), 'info': info_loss.item()}
+        primal_r = self.primal_fix_r if self.primal_fix_r else self.get_r(self.primal_decay_interval, self.primal_decay_r, epoch, final_r=self.primal_final_r, init_r=self.primal_init_r)
+        primal_info_loss = (primal_att * torch.log(primal_att/primal_r + 1e-6) + (1-primal_att) * torch.log((1-primal_att)/(1-primal_r+1e-6) + 1e-6)).mean()
+
+        dual_r = self.dual_fix_r if self.dual_fix_r else self.get_r(self.dual_decay_interval, self.dual_decay_r, epoch, final_r=self.dual_final_r, init_r=self.dual_init_r)
+        dual_info_loss = (dual_att * torch.log(dual_att/dual_r + 1e-6) + (1-dual_att) * torch.log((1-dual_att)/(1-dual_r+1e-6) + 1e-6)).mean()
+
+        primal_pred_loss = primal_pred_loss * self.primal_pred_loss_coef
+        primal_info_loss = primal_info_loss * self.primal_info_loss_coef
+
+        dual_pred_loss = dual_pred_loss * self.dual_pred_loss_coef
+        dual_info_loss = dual_info_loss * self.dual_info_loss_coef
+
+        loss = primal_pred_loss + dual_info_loss
+        primal_loss_dict = {'loss': loss.item(), 'pred': primal_pred_loss.item(), 'info': primal_info_loss.item()}
+        dual_loss_dict = {'loss': loss.item(), 'pred': dual_pred_loss.item(), 'info': dual_info_loss.item()}
+
+        loss_dict = primal_loss_dict.copy() 
+        loss_dict.update(dual_loss_dict)
+
         return loss, loss_dict
     
     def dual_forward_pass(self, primal_data, dual_data, epoch, training):
-        #print("Running dual_forward")
-        if epoch <= 50:
-            #print("Running epoch le 50")
-            emb = self.primal_clf.get_emb(primal_data.x, primal_data.edge_index, batch=primal_data.batch, edge_attr=primal_data.edge_attr)
-            att_log_logits = self.primal_extractor(emb, primal_data.edge_index, primal_data.batch)
-            att = self.sampling(att_log_logits, epoch, training)
+        # Primal 
+        primal_emb = self.primal_clf.get_emb(primal_data.x, primal_data.edge_index, batch=primal_data.batch, edge_attr=primal_data.edge_attr)
+        primal_att_log_logits = self.primal_extractor(primal_emb, primal_data.edge_index, primal_data.batch)
+        primal_node_att = self.sampling(primal_att_log_logits, epoch, training)
 
-            if self.primal_learn_edge_att:
-                if is_undirected(primal_data.edge_index):
-                    trans_idx, trans_val = transpose(primal_data.edge_index, att, None, None, coalesced=False)
-                    trans_val_perm = reorder_like(trans_idx, primal_data.edge_index, trans_val)
-                    edge_att = (att + trans_val_perm) / 2
-                else:
-                    edge_att = att
+        # Dual 
+        dual_emb = self.dual_clf.get_emb(dual_data.x, dual_data.edge_index, batch=dual_data.batch, edge_attr=dual_data.edge_attr)
+        dual_att_log_logits = self.dual_extractor(dual_emb, dual_data.edge_index, dual_data.batch)
+        dual_node_att = self.sampling(dual_att_log_logits, epoch, training)
+
+        if self.dual_learn_edge_att:
+            if is_undirected(dual_data.edge_index):
+                trans_idx, trans_val = transpose(dual_data.edge_index, dual_node_att, None, None, coalesced=False)
+                trans_val_perm = reorder_like(trans_idx, dual_data.edge_index, trans_val)
+                dual_edge_att = (dual_node_att + trans_val_perm) / 2
             else:
-                edge_att = self.lift_node_att_to_edge_att(att, primal_data.edge_index)
+                dual_edge_att = dual_node_att
+        else:
+            dual_edge_att = self.lift_node_att_to_edge_att(dual_node_att, dual_data.edge_index)
 
-            clf_logits = self.primal_clf(primal_data.x, primal_data.edge_index, primal_data.batch, edge_attr=primal_data.edge_attr, edge_atten=edge_att)
-            primal_loss, primal_loss_dict = self.__loss__(att, clf_logits, primal_data.y, epoch)
-
-            emb = self.dual_clf.get_emb(dual_data.x, dual_data.edge_index, batch=dual_data.batch, edge_attr=dual_data.edge_attr)
-            att_log_logits = self.dual_extractor(emb, dual_data.edge_index, dual_data.batch)
-            att = self.sampling(att_log_logits, epoch, training)
-
-            if self.dual_learn_edge_att:
-                if is_undirected(dual_data.edge_index):
-                    trans_idx, trans_val = transpose(dual_data.edge_index, att, None, None, coalesced=False)
-                    trans_val_perm = reorder_like(trans_idx, dual_data.edge_index, trans_val)
-                    dual_edge_att = (att + trans_val_perm) / 2
-                else:
-                    dual_edge_att = att
+        if self.primal_learn_edge_att:
+            if is_undirected(primal_data.edge_index):
+                trans_idx, trans_val = transpose(primal_data.edge_index, primal_node_att, None, None, coalesced=False)
+                trans_val_perm = reorder_like(trans_idx, primal_data.edge_index, trans_val)
+                primal_edge_att = (primal_node_att + trans_val_perm) / 2
             else:
-                dual_edge_att = self.lift_node_att_to_edge_att(att, dual_data.edge_index)
+                primal_edge_att = primal_node_att
+        else:
+            primal_edge_att = self.lift_node_att_to_edge_att(primal_node_att, primal_data.edge_index)
 
-            dual_clf_logits = self.dual_clf(dual_data.x, dual_data.edge_index, dual_data.batch, edge_attr=dual_data.edge_attr, edge_atten=dual_edge_att)
-            dual_loss, dual_loss_dict = self.__loss__(att, clf_logits, dual_data.y, epoch)
+        if (epoch > 50):
+            alpha = 0.5
+            primal_edge_att = alpha * dual_node_att + (1 - alpha) * primal_edge_att
 
-            loss = primal_loss + dual_loss
+        primal_clf_logits = self.primal_clf(primal_data.x, primal_data.edge_index, primal_data.batch,
+                                            edge_attr=primal_data.edge_attr, edge_atten=primal_edge_att)
+        #primal_loss, primal_loss_dict = self.__loss__(primal_edge_att, primal_clf_logits, primal_data.y, epoch)
 
-            loss_dict = primal_loss_dict.copy()  # avoid modifying original dict
-            loss_dict.update(dual_loss_dict)
 
-            return edge_att, loss, loss_dict, clf_logits
-        else: 
-            #print("Running epoch g 50")
-            #CHATGPT ATTEMPT 3 - honestly working p well with like 0.6-0.7, occasionally 0.8 ish att_roc but still kinda bad cause 0.94 for the og gsat
-            primal_emb = self.primal_clf.get_emb(primal_data.x, primal_data.edge_index, batch=primal_data.batch, edge_attr=primal_data.edge_attr)
-            primal_att_log_logits = self.primal_extractor(primal_emb, primal_data.edge_index, primal_data.batch)
-            primal_node_att = self.sampling(primal_att_log_logits, epoch, training)
+        dual_clf_logits = self.dual_clf(dual_data.x, dual_data.edge_index, dual_data.batch,
+                                    edge_attr=dual_data.edge_attr, edge_atten=dual_edge_att)
+        #dual_loss, dual_loss_dict = self.__loss__(dual_edge_att, dual_clf_logits, dual_data.y, epoch)
 
-            primal_edge_att_from_nodes = self.lift_node_att_to_edge_att(primal_node_att, primal_data.edge_index)
+        #input(f"primal_loss: {primal_loss}, dual_loss: {dual_loss}")
 
-            dual_emb = self.dual_clf.get_emb(dual_data.x, dual_data.edge_index, batch=dual_data.batch, edge_attr=dual_data.edge_attr)
-            dual_att_log_logits = self.dual_extractor(dual_emb, dual_data.edge_index, dual_data.batch)
-            dual_edge_att = self.sampling(dual_att_log_logits, epoch, training)
+        # lambda_att = 0.5  # tune this hyperparameter
+        # att_loss = F.mse_loss(dual_node_att, primal_edge_att.detach())
+        # loss = primal_loss + dual_loss + lambda_att * att_loss
 
-            alpha = 0.5  # tune this hyperparam
-            combined_edge_att = alpha * dual_edge_att + (1 - alpha) * primal_edge_att_from_nodes
+        # loss_dict = primal_loss_dict.copy() 
+        # loss_dict.update(dual_loss_dict)
 
-            primal_clf_logits = self.primal_clf(primal_data.x, primal_data.edge_index, primal_data.batch, edge_attr=primal_data.edge_attr, edge_atten=combined_edge_att)
+        # edge_index = primal_data.edge_index.cpu().numpy()
+        # att = primal_edge_att.detach().cpu().numpy()
 
-            clf_loss, clf_loss_dict = self.__loss__(combined_edge_att, primal_clf_logits, primal_data.y, epoch)
-            att_loss = F.mse_loss(primal_edge_att_from_nodes, dual_edge_att)
+        # num_nodes = primal_data.x.size(0)
 
-            lambda_att = 0.5
+        # att_matrix = np.zeros((num_nodes, num_nodes))
 
-            loss = clf_loss + lambda_att * att_loss
+        # for idx in range(edge_index.shape[1]):
+        #     print("stuck in a loop")
+        #     src = edge_index[0, idx]
+        #     dst = edge_index[1, idx]
+        #     att_matrix[src, dst] = att[idx]
+        #     att_matrix[dst, src] = att[idx] 
+        # print(att_matrix)
 
-            return combined_edge_att, loss, clf_loss_dict, primal_clf_logits
+        # # Plot
+        # plt.figure(figsize=(8, 6))
+        # print("before sns")
+        # sns.heatmap(att_matrix, cmap='coolwarm', center=0)
+        # print("after sns")
+        # plt.title("Primal Edge Attention Heatmap")
+        # plt.xlabel("Target Node")
+        # plt.ylabel("Source Node")
+        # plt.show()
+        # input("hellow")
+        # plt.close()
 
+        batch = primal_data.batch.cpu().numpy()
+        edge_index = primal_data.edge_index.cpu().numpy()
+        primal_att = primal_edge_att.detach().cpu().numpy()
+
+        dual_att = dual_node_att.detach().cpu().numpy()
+
+        num_graphs = batch.max() + 1
+
+        alpha = 0.5
+        comb_att = alpha * dual_node_att + (1 - alpha) * primal_edge_att
+
+        # for g in range(15):
+        #     # 1. Get node indices in graph g
+        #     node_mask = (batch == g)
+        #     node_indices = np.where(node_mask)[0]
+        #     node_id_map = {global_idx: local_idx for local_idx, global_idx in enumerate(node_indices)}
+        #     num_nodes = len(node_indices)
+
+        #     # 2. Mask edges that are fully inside graph g
+        #     edge_mask = np.isin(edge_index[0], node_indices) & np.isin(edge_index[1], node_indices)
+        #     graph_edges = edge_index[:, edge_mask]
+        #     primal_graph_att = primal_att[edge_mask]
+        #     dual_graph_att = dual_att[edge_mask]
+        #     comb_graph_att = comb_att[edge_mask]
+
+        #     # 3. Initialize empty attention matrix
+        #     primal_att_matrix = np.full((num_nodes, num_nodes), np.nan)
+        #     dual_att_matrix = np.full((num_nodes, num_nodes), np.nan)
+        #     comb_att_matrix = np.full((num_nodes, num_nodes), np.nan)
+
+        #     # 4. Fill matrix (use local node indices)
+        #     for idx in range(graph_edges.shape[1]):
+        #         src_global = graph_edges[0, idx]
+        #         dst_global = graph_edges[1, idx]
+        #         src_local = node_id_map[src_global]
+        #         dst_local = node_id_map[dst_global]
+        #         primal_att_matrix[src_local, dst_local] = primal_graph_att[idx]
+        #         primal_att_matrix[dst_local, src_local] = primal_graph_att[idx]
+
+        #         dual_att_matrix[src_local, dst_local] = dual_graph_att[idx]
+        #         dual_att_matrix[dst_local, src_local] = dual_graph_att[idx]
+
+        #         comb_att_matrix[src_local, dst_local] = comb_graph_att[idx]
+        #         comb_att_matrix[dst_local, src_local] = comb_graph_att[idx]
+
+        #     # 5. Plot heatmap
+        #     fig = plt.figure(figsize=(6, 5))
+        #     sns.heatmap(primal_att_matrix, cmap='coolwarm', center=0, square=True)
+        #     plt.title(f"Primal Edge Attention Heatmap - Graph {g}")
+        #     fig.canvas.manager.set_window_title(f"Primal Edge Att Graph {g}")
+        #     plt.xlabel("Target Primal Node")
+        #     plt.ylabel("Source Primal Node")
+        #     plt.tight_layout()
+        #     plt.show()
+        #     plt.close()
+
+        #     fig = plt.figure(figsize=(6, 5))
+        #     sns.heatmap(dual_att_matrix, cmap='coolwarm', center=0, square=True)
+        #     plt.title(f"Dual Node Attention Heatmap - Graph {g}")
+        #     fig.canvas.manager.set_window_title(f"Dual Node Att Graph {g}")
+        #     plt.xlabel("Target Primal Node (local)")
+        #     plt.ylabel("Source Primal Node (local)")
+        #     plt.tight_layout()
+        #     plt.show()
+        #     plt.close()
+
+        #     fig = plt.figure(figsize=(6, 5))
+        #     sns.heatmap(comb_att_matrix, cmap='coolwarm', center=0, square=True)
+        #     plt.title(f"Comb Attention Heatmap - Graph {g}")
+        #     fig.canvas.manager.set_window_title(f"Comb Att Graph {g}")
+        #     plt.xlabel("Target Primal Node (local)")
+        #     plt.ylabel("Source Primal Node (local)")
+        #     plt.tight_layout()
+        #     plt.show()
+        #     plt.close()
+        #     #input(f"Continue after viewing Graph {g}?")
+
+        # fig = plt.figure(figsize=(6,5))
+        # sns.heatmap(primal_edge_att.detach().cpu().numpy(), cmap='coolwarm', center=0)
+        # plt.title('Primal Edge Attention Heatmap')
+        # fig.canvas.manager.set_window_title(f"Primal Edge Att Epoch {epoch}")
+        # plt.show()
+        # plt.close()
+
+        # fig = plt.figure(figsize=(6,5))
+        # sns.heatmap(dual_edge_att.detach().cpu().numpy(), cmap='coolwarm', center=0)
+        # plt.title('Dual Node Attention Heatmap')
+        # fig.canvas.manager.set_window_title(f"Dual Node Att Epoch {epoch}")
+        # plt.show()
+        # plt.close()
+
+        # fig = plt.figure(figsize=(6,5))
+        # sns.heatmap(comb_att.detach().cpu().numpy(), cmap='coolwarm', center=0)
+        # plt.title('Comb Attention Heatmap')
+        # fig.canvas.manager.set_window_title(f"Comb Att Epoch {epoch}")
+        # plt.show()
+        # plt.close()
+
+        loss, loss_dict = self.__loss__(primal_edge_att, dual_edge_att, primal_clf_logits, dual_clf_logits, primal_data.y, dual_data.y, epoch)
+
+        return primal_edge_att, loss, loss_dict, primal_clf_logits
+        
+        #Attempt 3.0
+
+        # if epoch <= 50:
+        #     # Primal 
+        #     primal_emb = self.primal_clf.get_emb(primal_data.x, primal_data.edge_index, batch=primal_data.batch, edge_attr=primal_data.edge_attr)
+        #     primal_att_log_logits = self.primal_extractor(primal_emb, primal_data.edge_index, primal_data.batch)
+        #     primal_node_att = self.sampling(primal_att_log_logits, epoch, training)
+
+        #     if self.primal_learn_edge_att:
+        #         if is_undirected(primal_data.edge_index):
+        #             trans_idx, trans_val = transpose(primal_data.edge_index, primal_node_att, None, None, coalesced=False)
+        #             trans_val_perm = reorder_like(trans_idx, primal_data.edge_index, trans_val)
+        #             primal_edge_att = (primal_node_att + trans_val_perm) / 2
+        #         else:
+        #             primal_edge_att = primal_node_att
+        #     else:
+        #         primal_edge_att = self.lift_node_att_to_edge_att(primal_node_att, primal_data.edge_index)
+
+        #     primal_clf_logits = self.primal_clf(primal_data.x, primal_data.edge_index, primal_data.batch,
+        #                                         edge_attr=primal_data.edge_attr, edge_atten=primal_edge_att)
+        #     primal_loss, primal_loss_dict = self.__loss__(primal_edge_att, primal_clf_logits, primal_data.y, epoch)
+
+        #     # Dual 
+        #     dual_emb = self.dual_clf.get_emb(dual_data.x, dual_data.edge_index, batch=dual_data.batch, edge_attr=dual_data.edge_attr)
+        #     dual_att_log_logits = self.dual_extractor(dual_emb, dual_data.edge_index, dual_data.batch)
+        #     dual_node_att = self.sampling(dual_att_log_logits, epoch, training)
+
+        #     if self.dual_learn_edge_att:
+        #         if is_undirected(dual_data.edge_index):
+        #             trans_idx, trans_val = transpose(dual_data.edge_index, dual_node_att, None, None, coalesced=False)
+        #             trans_val_perm = reorder_like(trans_idx, dual_data.edge_index, trans_val)
+        #             dual_edge_att = (dual_node_att + trans_val_perm) / 2
+        #         else:
+        #             dual_edge_att = dual_node_att
+        #     else:
+        #         dual_edge_att = self.lift_node_att_to_edge_att(dual_node_att, dual_data.edge_index)
+
+        #     dual_clf_logits = self.dual_clf(dual_data.x, dual_data.edge_index, dual_data.batch,
+        #                                 edge_attr=dual_data.edge_attr, edge_atten=dual_edge_att)
+        #     dual_loss, dual_loss_dict = self.__loss__(dual_edge_att, dual_clf_logits, dual_data.y, epoch)
+
+        #     input(f"primal_loss: {primal_loss}, dual_loss: {dual_loss}")
+
+        #     lambda_att = 0.5  # tune this hyperparameter
+        #     att_loss = F.mse_loss(dual_node_att, primal_edge_att.detach())
+        #     loss = primal_loss + dual_loss + lambda_att * att_loss
+
+        #     loss_dict = primal_loss_dict.copy()  
+        #     loss_dict.update(dual_loss_dict)
+
+        #     return primal_edge_att, loss, loss_dict, primal_clf_logits
+        # else:
+        #     primal_emb = self.primal_clf.get_emb(primal_data.x, primal_data.edge_index, batch=primal_data.batch, edge_attr=primal_data.edge_attr)
+        #     primal_att_log_logits = self.primal_extractor(primal_emb, primal_data.edge_index, primal_data.batch)
+        #     primal_node_att = self.sampling(primal_att_log_logits, epoch, training)
+
+        #     primal_edge_att_from_nodes = self.lift_node_att_to_edge_att(primal_node_att, primal_data.edge_index)
+
+        #     dual_emb = self.dual_clf.get_emb(dual_data.x, dual_data.edge_index, batch=dual_data.batch, edge_attr=dual_data.edge_attr)
+        #     dual_att_log_logits = self.dual_extractor(dual_emb, dual_data.edge_index, dual_data.batch)
+        #     dual_node_att = self.sampling(dual_att_log_logits, epoch, training)
+
+        #     dual_edge_att = self.lift_node_att_to_edge_att(dual_node_att, dual_data.edge_index)
+
+        #     alpha = 0.5  # tune this hyperparam
+        #     primal_edge_att = alpha * dual_node_att + (1 - alpha) * primal_edge_att_from_nodes
+
+        #     primal_clf_logits = self.primal_clf(primal_data.x, primal_data.edge_index, primal_data.batch,
+        #                                         edge_attr=primal_data.edge_attr, edge_atten=primal_edge_att)
+        #     primal_loss, primal_loss_dict = self.__loss__(primal_edge_att, primal_clf_logits, primal_data.y, epoch)
+
+        #     dual_clf_logits = self.dual_clf(dual_data.x, dual_data.edge_index, dual_data.batch,
+        #                                 edge_attr=dual_data.edge_attr, edge_atten=dual_edge_att)
+        #     dual_loss, dual_loss_dict = self.__loss__(dual_edge_att, dual_clf_logits, dual_data.y, epoch)
+
+        #     lambda_att = 0.5  # tune this hyperparameter
+        #     att_loss = F.mse_loss(dual_node_att, primal_edge_att.detach())
+        #     loss = primal_loss + dual_loss + lambda_att * att_loss
+
+        #     loss_dict = primal_loss_dict.copy()  
+        #     loss_dict.update(dual_loss_dict)
+
+        #     return primal_edge_att, loss, loss_dict, primal_clf_logits
 
         #ATTEMPT 2 - not done
         # dual_emb = self.dual_clf.get_emb(dual_data.x, dual_data.edge_index, batch=dual_data.batch, edge_attr=dual_data.edge_attr)
@@ -603,6 +812,8 @@ class GSAT(nn.Module):
 
             node_label = primal_viz_set[i].node_label.reshape(-1) if primal_viz_set[i].get('node_label', None) is not None else torch.zeros(primal_viz_set[i].x.shape[0])
             fig, img = visualize_a_graph(primal_viz_set[i].edge_index, edge_att, node_label, self.primal_dataset_name, norm=self.primal_viz_norm_att, mol_type=mol_type, coor=coor)
+            plt.show()
+            plt.close(fig)
             imgs.append(img)
         imgs = np.stack(imgs)
         self.primal_writer.add_images(tag, imgs, epoch, dataformats='NHWC')

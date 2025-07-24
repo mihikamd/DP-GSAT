@@ -27,6 +27,7 @@ class GINConv(BaseGINConv):
         return self.nn(out)
 
     def message(self, x_j: Tensor, edge_atten: OptTensor = None) -> Tensor:
+        #print('\U0001F96D Message called GINConv')
         if edge_atten is not None:
             return x_j * edge_atten
         else:
@@ -49,6 +50,7 @@ class GINEConv(BaseGINEConv):
         return self.nn(out)
 
     def message(self, x_j: Tensor, edge_attr: Tensor, edge_atten: OptTensor = None) -> Tensor:
+        print('\U0001F96D Message called GINEConv')
         if self.lin is None and x_j.size(-1) != edge_attr.size(-1):
             raise ValueError("Node and edge feature dimensionalities do not "
                              "match. Consider setting the 'edge_dim' "
@@ -80,6 +82,7 @@ class LEConv(BaseLEConv):
         return out + self.lin3(x[1])
 
     def message(self, a_j: Tensor, b_i: Tensor, edge_weight: OptTensor, edge_atten: OptTensor = None) -> Tensor:
+        print('\U0001F96D Message called LEConv')
         out = a_j - b_i
         m = out if edge_weight is None else out * edge_weight.view(-1, 1)
 
@@ -161,6 +164,7 @@ class PNAConvSimple(MessagePassing):
         return self.post_nn(out)
 
     def message(self, x_i: Tensor, x_j: Tensor, edge_attr=None, edge_atten=None) -> Tensor:
+        print('\U0001F96D Message called PNAConvSimple')
         if edge_attr is not None:
             m = torch.cat([x_i, x_j, edge_attr], dim=-1)
         else:

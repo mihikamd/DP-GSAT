@@ -93,7 +93,7 @@ class Mutag(InMemoryDataset):
                         plt.show(block=True)
                         plt.close(fig)
 
-                data_list.append(Data(x=x, y=y, edge_index=edge_index, node_label=node_label, edge_label=edge_label, node_type=torch.tensor(node_type_lists[i])))
+                data_list.append(Data(x=x, y=y, edge_index=edge_index, node_label=node_label, edge_label=edge_label, node_type=node_type))
 
         print("len_primal_datalist: ", len(data_list))
         input("continue check primal len")
