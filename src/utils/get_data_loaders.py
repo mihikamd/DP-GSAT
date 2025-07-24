@@ -39,14 +39,12 @@ def get_data_loaders(data_dir, dataset_name, batch_size, splits, random_state, m
         dataset = Mutag(root=data_dir / 'mutag')
         split_idx = get_random_split_idx(dataset, splits, random_state=random_state, mutag_x=mutag_x)
         loaders, test_set = get_loaders_and_test_set(batch_size, dataset=dataset, split_idx=split_idx)
-        print("\U0001F96D HERE GOD DAMNIT IM HERE") #MANGO
         train_set = dataset[split_idx['train']]
 
     elif dataset_name == 'mutag_dual':
         dataset = Mutag_Dual(root=data_dir / 'mutag_dual') #MANGO
         split_idx = get_random_split_idx(dataset, splits, random_state=random_state, mutag_x=mutag_x)
         loaders, test_set = get_loaders_and_test_set(batch_size, dataset=dataset, split_idx=split_idx) #MANGO
-        print("\U0001F96D HERE CRAP FUCKING BUCKETS") #MANGO
         train_set = dataset[split_idx['train']] #MANGO
 
     elif 'ogbg' in dataset_name:
