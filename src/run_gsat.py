@@ -34,10 +34,10 @@ class GSAT(nn.Module):
     #treat as two separate models running inside of gsat and just duplicate everything? 
     def __init__(self, primal_clf, primal_extractor, primal_optimizer, primal_scheduler, primal_writer, primal_device, primal_model_dir, primal_dataset_name, primal_num_class, primal_multi_label, primal_random_state,
                  primal_method_config, primal_shared_config, primal_model_config, dual_clf, dual_extractor, dual_optimizer, dual_scheduler, dual_writer, dual_device, dual_model_dir, dual_dataset_name, dual_num_class, dual_multi_label, dual_random_state,
-                 dual_method_config, dual_shared_config, dual_model_config, alpha, lamb):
+                 dual_method_config, dual_shared_config, dual_model_config):
         super().__init__()
-        self.alpha = alpha
-        self.lamb = lamb
+        # self.alpha = alpha
+        # self.lamb = lamb
 
         self.primal_clf = primal_clf
         self.primal_extractor = primal_extractor
@@ -75,7 +75,7 @@ class GSAT(nn.Module):
         self.primal_mask_mlp = nn.Sequential(
             nn.Linear(self.primal_hidden_size, self.primal_hidden_size),
             nn.ReLU(),
-            nn.Linear(self.primal_hidden_size, 2)  # Output: logit for [keep, drop]
+            nn.Linear(self.primal_hidden_size, 2)
         )
 
         #DUAL
@@ -115,19 +115,21 @@ class GSAT(nn.Module):
         self.dual_mask_mlp = nn.Sequential(
             nn.Linear(self.dual_hidden_size, self.dual_hidden_size),
             nn.ReLU(),
-            nn.Linear(self.dual_hidden_size, 2)  # Output: logit for [keep, drop]
+            nn.Linear(self.dual_hidden_size, 2)
         )
 
-    def __loss__(self, primal_att, dual_att, primal_clf_logits, dual_clf_logits, primal_clf_labels, dual_clf_labels, epoch): #just used primal self. for all of this
+    def __loss__(self, primal_att, dual_att, primal_clf_logits, dual_clf_logits, primal_clf_labels, dual_clf_labels, dual_att_log_logits, epoch): #just used primal self. for all of this
         primal_pred_loss = self.primal_criterion(primal_clf_logits, primal_clf_labels)
 
         dual_pred_loss = self.dual_criterion(dual_clf_logits, dual_clf_labels)
 
-        primal_r = self.primal_fix_r if self.primal_fix_r else self.get_r(self.primal_decay_interval, self.primal_decay_r, epoch, final_r=self.primal_final_r, init_r=self.primal_init_r)
-        primal_info_loss = (primal_att * torch.log(primal_att/primal_r + 1e-6) + (1-primal_att) * torch.log((1-primal_att)/(1-primal_r+1e-6) + 1e-6)).mean()
-
         dual_r = self.dual_fix_r if self.dual_fix_r else self.get_r(self.dual_decay_interval, self.dual_decay_r, epoch, final_r=self.dual_final_r, init_r=self.dual_init_r)
         dual_info_loss = (dual_att * torch.log(dual_att/dual_r + 1e-6) + (1-dual_att) * torch.log((1-dual_att)/(1-dual_r+1e-6) + 1e-6)).mean()
+
+        primal_r = dual_att_log_logits.sigmoid().detach()
+
+        #primal_r = self.primal_fix_r if self.primal_fix_r else self.get_r(self.primal_decay_interval, self.primal_decay_r, epoch, final_r=self.primal_final_r, init_r=self.primal_init_r)
+        primal_info_loss = (primal_att * torch.log(primal_att/primal_r + 1e-6) + (1-primal_att) * torch.log((1-primal_att)/(1-primal_r+1e-6) + 1e-6)).mean()
 
         primal_pred_loss = primal_pred_loss * self.primal_pred_loss_coef
         primal_info_loss = primal_info_loss * self.primal_info_loss_coef
@@ -144,6 +146,24 @@ class GSAT(nn.Module):
 
         return loss, loss_dict
     
+    def f1_sparsity_loss(self, p_uv, y_uv, eps=1e-6):
+        TP = (p_uv * y_uv).sum()
+
+        P = p_uv.sum()
+
+        G = y_uv.sum()
+
+        precision = TP / (P + eps)
+        recall = TP / (G + eps)
+
+        assert (p_uv >= 0).all() and (p_uv <= 1).all()
+
+        f1 = 2 * precision * recall / (precision + recall + eps)
+
+        print(f"TP={TP.item()}, P={P.item()}, G={G.item()}, precision={precision.item()}, recall={recall.item()}, f1={f1.item()}")
+
+        return 1 - f1
+    
     def dual_forward_pass(self, primal_data, dual_data, epoch, training):
         # Primal 
         primal_emb = self.primal_clf.get_emb(primal_data.x, primal_data.edge_index, batch=primal_data.batch, edge_attr=primal_data.edge_attr)
@@ -154,7 +174,8 @@ class GSAT(nn.Module):
         # Apply node mask
         #primal_masked_emb = primal_emb * primal_node_mask.unsqueeze(-1)
 
-        primal_att_log_logits = self.primal_extractor(primal_emb, primal_data.edge_index, primal_data.batch)
+        primal_att_log_logits = self.primal_extractor(primal_emb, primal_data.edge_index, primal_data.batch, "primal")
+
 
         #print("primal_att_log_logits:", primal_att_log_logits[:10])
 
@@ -163,18 +184,18 @@ class GSAT(nn.Module):
 
         # Dual 
         dual_emb = self.dual_clf.get_emb(dual_data.x, dual_data.edge_index, batch=dual_data.batch, edge_attr=dual_data.edge_attr)
-        dual_att_log_logits = self.dual_extractor(dual_emb, dual_data.edge_index, dual_data.batch)
+        dual_att_log_logits = self.dual_extractor(dual_emb, dual_data.edge_index, dual_data.batch, "dual")
 
         #print("dual_att_log_logits:", dual_att_log_logits[:10])
 
+        
         dual_node_att = self.sampling(dual_att_log_logits, epoch, training)
 
         #dual_node_att = F.gumbel_softmax(dual_att_log_logits, tau = 1, hard = False ,dim = -1)[:,0]
         #dual_node_att = dual_node_att.unsqueeze(-1)
+        y_uv = primal_data.edge_label.float().to(dual_node_att.device)
+        f1_loss = self.f1_sparsity_loss(dual_node_att, y_uv)
 
-        att_strength_penalty = dual_node_att.mean()  # or dual_node_att.norm(p=2)
-
-        att_var_penalty = -torch.var(dual_node_att)
         dual_node_att_other = self.sampling(dual_att_log_logits, epoch, training)
 
         if self.dual_learn_edge_att:
@@ -196,54 +217,17 @@ class GSAT(nn.Module):
                 primal_edge_att = primal_node_att
         else:
             primal_edge_att = self.lift_node_att_to_edge_att(primal_node_att, primal_data.edge_index)
+            old_primal_edge_att = self.lift_node_att_to_edge_att(primal_node_att, primal_data.edge_index)
 
         if (epoch > 50):
             primal_edge_att = 0.3 * dual_node_att + (1 - 0.3) * primal_edge_att
 
         primal_clf_logits = self.primal_clf(primal_data.x, primal_data.edge_index, primal_data.batch,
                                             edge_attr=primal_data.edge_attr, edge_atten=primal_edge_att)
-        #primal_loss, primal_loss_dict = self.__loss__(primal_edge_att, primal_clf_logits, primal_data.y, epoch)
 
 
         dual_clf_logits = self.dual_clf(dual_data.x, dual_data.edge_index, dual_data.batch,
                                     edge_attr=dual_data.edge_attr, edge_atten=dual_edge_att)
-        #dual_loss, dual_loss_dict = self.__loss__(dual_edge_att, dual_clf_logits, dual_data.y, epoch)
-
-        #input(f"primal_loss: {primal_loss}, dual_loss: {dual_loss}")
-
-        # lambda_att = 0.5  # tune this hyperparameter
-        # att_loss = F.mse_loss(dual_node_att, primal_edge_att.detach())
-        # loss = primal_loss + dual_loss + lambda_att * att_loss
-
-        # loss_dict = primal_loss_dict.copy() 
-        # loss_dict.update(dual_loss_dict)
-
-        # edge_index = primal_data.edge_index.cpu().numpy()
-        # att = primal_edge_att.detach().cpu().numpy()
-
-        # num_nodes = primal_data.x.size(0)
-
-        # att_matrix = np.zeros((num_nodes, num_nodes))
-
-        # for idx in range(edge_index.shape[1]):
-        #     print("stuck in a loop")
-        #     src = edge_index[0, idx]
-        #     dst = edge_index[1, idx]
-        #     att_matrix[src, dst] = att[idx]
-        #     att_matrix[dst, src] = att[idx] 
-        # print(att_matrix)
-
-        # # Plot
-        # plt.figure(figsize=(8, 6))
-        # print("before sns")
-        # sns.heatmap(att_matrix, cmap='coolwarm', center=0)
-        # print("after sns")
-        # plt.title("Primal Edge Attention Heatmap")
-        # plt.xlabel("Target Node")
-        # plt.ylabel("Source Node")
-        # plt.show()
-        # input("hellow")
-        # plt.close()
 
         batch = primal_data.batch.cpu().numpy()
         edge_index = primal_data.edge_index.cpu().numpy()
@@ -253,9 +237,21 @@ class GSAT(nn.Module):
 
         num_graphs = batch.max() + 1
 
-        comb_att = self.alpha * dual_node_att + (1 - self.alpha) * primal_edge_att
+        alpha = 0.3
+
+        comb_att = alpha * dual_node_att + (1 - alpha) * old_primal_edge_att
 
         ground_truth_mask = primal_data.edge_label.cpu().numpy()
+
+        loss, loss_dict = self.__loss__(primal_edge_att, dual_edge_att, primal_clf_logits, dual_clf_logits, primal_data.y, dual_data.y, dual_att_log_logits, epoch)
+
+        #loss += self.lamb * (att_strength_penalty + att_var_penalty)
+        print(loss)
+        print(f1_loss)
+        loss += f1_loss*0.01
+        print(loss)
+        input('loss')
+
 
         # for g in range(15):
         #     # 1. Get node indices in graph g
@@ -365,43 +361,39 @@ class GSAT(nn.Module):
         # fig.canvas.manager.set_window_title(f"Comb Att Epoch {epoch}")
         # plt.show()
         # plt.close()
+        if (epoch % 10 == 0):
+            ground_truth_mask = primal_data.edge_label
 
-        # ground_truth_mask = primal_data.edge_label
+            fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 
-        # fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-
-        # # Get binary mask as indices
-        # gt_indices = torch.nonzero(ground_truth_mask == 1)  # returns tensor of shape [N, 1]
-        # gt_indices = gt_indices.view(-1).cpu().numpy()     
+            # Get binary mask as indices
+            gt_indices = torch.nonzero(ground_truth_mask == 1)  # returns tensor of shape [N, 1]
+            gt_indices = gt_indices.view(-1).cpu().numpy()     
 
 
-        # # Primal Edge Attention
-        # sns.heatmap(primal_edge_att.detach().cpu().numpy().reshape(1, -1), ax=axes[0, 0], cmap='coolwarm', center=0)
-        # axes[0, 0].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
-        # axes[0, 0].set_title('Primal Edge Attention')
+            # Primal Edge Attention
+            sns.heatmap(primal_edge_att.detach().cpu().numpy().reshape(1, -1), ax=axes[0, 0], cmap='coolwarm', center=0)
+            axes[0, 0].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
+            axes[0, 0].set_title('Primal Edge Attention')
 
-        # # Dual Node Attention
-        # sns.heatmap(dual_node_att.detach().cpu().numpy().reshape(1, -1), ax=axes[0, 1], cmap='coolwarm', center=0)
-        # axes[0, 1].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
-        # axes[0, 1].set_title('Dual Node Attention')
+            # Dual Node Attention
+            sns.heatmap(dual_node_att.detach().cpu().numpy().reshape(1, -1), ax=axes[0, 1], cmap='coolwarm', center=0)
+            axes[0, 1].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
+            axes[0, 1].set_title('Dual Node Attention')
 
-        # sns.heatmap(dual_node_att_other.detach().cpu().numpy().reshape(1, -1), ax=axes[1,0], cmap='coolwarm', center=0)
-        # axes[1, 0].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
-        # axes[1, 0].set_title('Dual Node Attention w/o gumbel')
+            sns.heatmap(dual_node_att_other.detach().cpu().numpy().reshape(1, -1), ax=axes[1,0], cmap='coolwarm', center=0)
+            axes[1, 0].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
+            axes[1, 0].set_title('Dual Node Attention w/o gumbel')
 
-        # # Combined Attention
-        # sns.heatmap(comb_att.detach().cpu().numpy().reshape(1, -1), ax=axes[1, 1], cmap='coolwarm', center=0)
-        # axes[1, 1].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
-        # axes[1, 1].set_title('Combined Attention')
+            # Combined Attention
+            sns.heatmap(comb_att.detach().cpu().numpy().reshape(1, -1), ax=axes[1, 1], cmap='coolwarm', center=0)
+            axes[1, 1].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
+            axes[1, 1].set_title('Combined Attention')
 
-        # # Final layout
-        # plt.suptitle(f'Attention Visualizations with Ground Truth - Epoch {epoch}')
-        # plt.tight_layout()
-        # plt.show()
-
-        loss, loss_dict = self.__loss__(primal_edge_att, dual_edge_att, primal_clf_logits, dual_clf_logits, primal_data.y, dual_data.y, epoch)
-
-        loss += self.lamb * (att_strength_penalty + att_var_penalty)
+            # Final layout
+            plt.suptitle(f'Attention Visualizations with Ground Truth - Epoch {epoch}')
+            plt.tight_layout()
+            plt.show()
 
         return primal_edge_att, loss, loss_dict, primal_clf_logits
         
@@ -671,44 +663,6 @@ class GSAT(nn.Module):
             test_res = self.dual_run_one_epoch(primal_loaders['test'], dual_loaders['test'], epoch, 'test', use_edge_attr)
             self.primal_writer.add_scalar('gsat_train/lr', get_lr(self.primal_optimizer), epoch) #need dual?
 
-            # MANGO BELOW
-            self.primal_clf.eval() #need_dual?
-            self.dual_clf.eval()
-            primal_graph_embeds_epoch = []
-            dual_graph_embeds_epoch = []
-
-            # for data in primal_test_set:
-            #     data = data.to(self.primal_device)
-            #     with torch.no_grad():
-            #         batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.primal_device)
-            #         #graph_emb = self.primal_clf.get_graph_emb(data.x, data.edge_index, batch, data.edge_attr)
-            #         node_emb = self.primal_clf.get_emb(data.x, data.edge_index, batch=data.batch, edge_attr=data.edge_attr)
-            #     graph_embeds_epoch.append(graph_emb.cpu())
-
-            for data in primal_test_set:  # <- use a DataLoader that batches graphs
-                data = data.to(self.primal_device)
-                with torch.no_grad():
-                    batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.primal_device)
-                    node_emb = self.primal_clf.get_emb(data.x, data.edge_index, batch=batch, edge_attr=data.edge_attr)
-                    #graph_emb = self.primal_clf.get_graph_emb(data.x, data.edge_index, batch=batch, edge_attr=data.edge_attr)
-                    primal_graph_embeds_epoch.append(node_emb.cpu())
-
-            for data in dual_test_set:  # <- use a DataLoader that batches graphs
-                data = data.to(self.dual_device)
-                with torch.no_grad():
-                    batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.dual_device)
-                    node_emb = self.dual_clf.get_emb(data.x, data.edge_index, batch=batch, edge_attr=data.edge_attr)
-                    #graph_emb = self.dual_clf.get_graph_emb(data.x, data.edge_index, batch=batch, edge_attr=data.edge_attr)
-                    dual_graph_embeds_epoch.append(node_emb.cpu())
-
-            # primal_graph_embeds_epoch = torch.cat(primal_graph_embeds_epoch, dim=0) 
-            primal_graph_embeds.append(primal_graph_embeds_epoch)
-
-            # dual_graph_embeds_epoch = torch.cat(dual_graph_embeds_epoch, dim=0) 
-            dual_graph_embeds.append(dual_graph_embeds_epoch)
-
-            #MANGO ABOVE
-
             assert len(train_res) == 5
             main_metric_idx = 3 if 'ogb' in self.primal_dataset_name else 2  # clf_roc or clf_acc
             if self.primal_scheduler is not None:
@@ -745,81 +699,6 @@ class GSAT(nn.Module):
                   f'Best Test X AUROC: {metric_dict["metric/best_x_roc_test"]:.3f}')
             print('====================================')
             print('====================================')
-    
-        #primal_graph_embeds = torch.cat(primal_graph_embeds) 
-        #dual_graph_embeds = torch.cat(dual_graph_embeds) 
-
-        ##### FROM HERE for NSA 
-
-        # print('\U0001F96D len(primal_graph_embeddings)', len(primal_graph_embeds))
-        # print('\U0001F96D len(dual_graph_embeddings)', len(dual_graph_embeds))
-
-        # local_nsa = LNSA_loss()
-        # global_nsa = NSALoss()
-
-        # for i in range(self.primal_epochs):
-        #     print(f"\U0001F96D ========== epoch{i} =========")
-
-            # l_nsa_values = []
-            # for prim_emb, dual_emb in zip(primal_graph_embeds[i], dual_graph_embeds[i]):
-            #     l_nsa_val = local_nsa(prim_emb, dual_emb)
-            #     l_nsa_values.append(l_nsa_val.item())  # or just l_nsa_val if you want tensors
-
-            # # Aggregate, e.g. average
-            # l_nsa = sum(l_nsa_values) / len(l_nsa_values)
-            # input("continue lnsa")
-
-            # print("primal_graph_embeds[i].shape =", primal_graph_embeds[i][1].shape)
-            # print("dual_graph_embeds[i].shape =", dual_graph_embeds[i][1].shape)
-            # input("continue")
-
-            #g_nsa = global_nsa(primal_graph_embeds[i], dual_graph_embeds[i])
-            # l_nsa = local_nsa(primal_graph_embeds[i], dual_graph_embeds[i])
-            #nsa = g_nsa + l_nsa
-
-            #print("\U0001F96D global_nsa:", g_nsa)
-            # print("\U0001F96D local_nsa:", l_nsa)
-            #print("\U0001F96D nsa:", nsa)
-
-            # p_np = primal_graph_embeds[i].detach().cpu().numpy()
-            # d_np = dual_graph_embeds[i].detach().cpu().numpy()
-
-            # p_np = torch.cat(primal_graph_embeds[i], dim=0).detach().cpu().numpy()
-            # d_np = torch.cat(dual_graph_embeds[i], dim=0).detach().cpu().numpy()
-
-            # all_embeddings = np.vstack([p_np, d_np])
-            # labels = np.array(['Primal'] * len(p_np) + ['Dual'] * len(d_np))
-
-            # tsne = TSNE(n_components=2, perplexity=30, init='random', random_state=42)
-            # emb_2d = tsne.fit_transform(all_embeddings)
-
-            # plt.figure(figsize=(8, 6))
-
-
-            # #DRAWS LINE B/W CORRESPONDING
-            # # for j in range(len(p_np)):
-            # #     p = emb_2d[j]
-            # #     d = emb_2d[j + len(p_np)]
-            # #     plt.plot([p[0], d[0]], [p[1], d[1]], color='gray', linewidth=0.5, alpha=0.4)
-
-            # plt.scatter(emb_2d[:len(p_np), 0], emb_2d[:len(p_np), 1], label='Primal', alpha=0.8)
-            # plt.scatter(emb_2d[len(p_np):, 0], emb_2d[len(p_np):, 1], label='Dual', alpha=0.8)
-
-            # plt.title(f"t-SNE: Primal vs Dual Node Embeddings (Epoch {i})")
-            # plt.legend()
-            # plt.tight_layout()
-
-            # #plt.savefig(f"../Graph_Visualizations_MUTAG/DPGE_paper_{i}.png", dpi=600, bbox_inches='tight')
-
-            # plt.show()
-
-            # # import os
-
-            # # os.makedirs('../Graph_Visualizations_MUTAG/t-SNE_over_100_epochs/', exist_ok=True)
-            
-            # input("Continue to next epoch...")
-
-        ##### TILL HERE
 
         return metric_dict
 
@@ -882,30 +761,14 @@ class GSAT(nn.Module):
         return precision_at_k
     
     def get_delta_kl(self, exp_labels, att, eps=1e-6):
-        """
-        Computes the KL divergence delta metric for edge-level explanations.
-        
-        Args:
-            exp_labels (Tensor): Ground truth edge labels, shape [num_edges]
-            att (Tensor): Attention scores (r_uv), shape [num_edges]
-            eps (float): Small value to avoid log(0)
-        
-        Returns:
-            float: Sum of delta KL divergence over edges
-        """
-        # Ensure float and safe bounds
-        p = exp_labels.float().clamp(min=eps, max=1-eps)       # ground truth label
-        r_uv = att.clamp(min=eps, max=1-eps)                   # attention per edge
-        r = r_uv.mean().clamp(min=eps, max=1-eps)             # mean attention
+        p = exp_labels.float().clamp(min=eps, max=1-eps)
+        r_uv = att.clamp(min=eps, max=1-eps)
+        r = r_uv.mean().clamp(min=eps, max=1-eps)
 
-        # Apply KL delta formula
         delta_kl = p * torch.log(r_uv / r) + (1 - p) * torch.log((1 - r_uv) / (1 - r))
 
-        # print(f"min r_uv: {r_uv.min()}, max r_uv: {r_uv.max()}, mean r_uv: {r_uv.mean()}")
-        # print(f"r: {r}")
-        # print(f"delta_kl per edge: {delta_kl}")
-        # print(f"sum delta_kl: {delta_kl.sum()}")
         return delta_kl.sum().item()
+
 
     def get_viz_idx(self, test_set, dataset_name):
         y_dist = test_set.data.y.numpy().reshape(-1)
@@ -994,28 +857,47 @@ class GSAT(nn.Module):
 
 class ExtractorMLP(nn.Module):
 
-    def __init__(self, hidden_size, shared_config):
+    def __init__(self, hidden_size, shared_config, type):
         super().__init__()
-        self.primal_learn_edge_att = shared_config['learn_edge_att']
-        dropout_p = shared_config['extractor_dropout_p']
+        if(type == "primal"):
+            self.primal_learn_edge_att = shared_config['learn_edge_att']
+            dropout_p = shared_config['extractor_dropout_p']
 
-        if self.primal_learn_edge_att:
-            self.primal_feature_extractor = MLP([hidden_size * 2, hidden_size * 4, hidden_size, 1], dropout=dropout_p)
-        else:
-            self.primal_feature_extractor = MLP([hidden_size * 1, hidden_size * 2, hidden_size, 1], dropout=dropout_p)
+            if self.primal_learn_edge_att:
+                self.primal_feature_extractor = MLP([hidden_size * 2, hidden_size * 4, hidden_size, 1], dropout=dropout_p)
+            else:
+                self.primal_feature_extractor = MLP([hidden_size * 1, hidden_size * 2, hidden_size, 1], dropout=dropout_p)
+        elif (type == "dual"):
+            self.dual_learn_edge_att = shared_config['learn_edge_att']
+            dropout_p = shared_config['extractor_dropout_p']
 
-    def forward(self, emb, edge_index, batch):
-        if self.primal_learn_edge_att:
-            col, row = edge_index
-            f1, f2 = emb[col], emb[row]
-            f12 = torch.cat([f1, f2], dim=-1)
-            att_log_logits = self.primal_feature_extractor(f12, batch[col])
-        else:
-            att_log_logits = self.primal_feature_extractor(emb, batch)
-        return att_log_logits
+            if self.dual_learn_edge_att:
+                self.dual_feature_extractor = MLP([hidden_size * 2, hidden_size * 4, hidden_size, 1], dropout=dropout_p)
+            else:
+                self.dual_feature_extractor = MLP([hidden_size * 1, hidden_size * 2, hidden_size, 1], dropout=dropout_p)
+
+    def forward(self, emb, edge_index, batch, type):
+        if (type == "primal"):
+            if self.primal_learn_edge_att:
+                col, row = edge_index
+                f1, f2 = emb[col], emb[row]
+                f12 = torch.cat([f1, f2], dim=-1)
+                att_log_logits = self.primal_feature_extractor(f12, batch[col])
+            else:
+                att_log_logits = self.primal_feature_extractor(emb, batch)
+            return att_log_logits
+        elif (type == "dual"):
+            if self.dual_learn_edge_att:
+                col, row = edge_index
+                f1, f2 = emb[col], emb[row]
+                f12 = torch.cat([f1, f2], dim=-1)
+                att_log_logits = self.dual_feature_extractor(f12, batch[col])
+            else:
+                att_log_logits = self.dual_feature_extractor(emb, batch)
+            return att_log_logits
 
 
-def train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_name, method_name, device, random_state, alpha, lamb):
+def train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_name, method_name, device, random_state):
     print('====================================')
     print('====================================')
     print(f'[INFO] Using device: {device}')
@@ -1072,9 +954,9 @@ def train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_nam
     if not method_config['from_scratch']:
         print('[INFO] Pretraining the model...')
         train_clf_one_seed(local_config, data_dir, log_dir, model_name, dataset_name, device, random_state,
-                           model=model, loaders=loaders, num_class=num_class, aux_info=aux_info)
+                           model=primal_model, loaders=loaders, num_class=num_class, aux_info=aux_info)
         pretrain_epochs = local_config['model_config']['pretrain_epochs'] - 1
-        load_checkpoint(model, model_dir=log_dir, model_name=f'epoch_{pretrain_epochs}')
+        load_checkpoint(primal_model, model_dir=log_dir, model_name=f'epoch_{pretrain_epochs}')
     else:
         print('[INFO] Training both the model and the attention from scratch...')
 
@@ -1090,7 +972,7 @@ def train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_nam
         print('[DUAL INFO] Training both the model and the attention from scratch...')
     #DUAL
 
-    extractor = ExtractorMLP(model_config['hidden_size'], shared_config).to(device) #this is the parameter to be changed 
+    extractor = ExtractorMLP(model_config['hidden_size'], shared_config, "primal").to(device) #this is the parameter to be changed 
     lr, wd = method_config['lr'], method_config.get('weight_decay', 0)
     primal_optimizer = torch.optim.Adam(list(extractor.parameters()) + list(primal_model.parameters()), lr=lr, weight_decay=wd)
 
@@ -1103,21 +985,10 @@ def train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_nam
     metric_dict = deepcopy(init_metric_dict)
     writer.add_hparams(hparam_dict=hparam_dict, metric_dict=metric_dict)
 
-    # print('====================================')
-    # print('[INFO] Training GSAT...') #might need to pass in two parameters?
-    # gsat = GSAT(model, extractor, optimizer, scheduler, writer, device, log_dir, dataset_name, num_class, aux_info['multi_label'], random_state, method_config, shared_config)
-    # metric_dict, primal_graph_embeddings = gsat.train(loaders, dual_loaders, test_set, metric_dict, model_config.get('use_edge_attr', True))
-
     #DUAL
-    dual_extractor = ExtractorMLP(dual_model_config['hidden_size'], dual_shared_config).to(device)
+    dual_extractor = ExtractorMLP(dual_model_config['hidden_size'], dual_shared_config, "dual").to(device)
     dual_lr, dual_wd = dual_method_config['lr'], dual_method_config.get('weight_decay', 0)
     dual_optimizer = torch.optim.Adam(list(dual_extractor.parameters()) + list(dual_model.parameters()), lr=dual_lr, weight_decay=dual_wd)
-
-    # print("dual_model.parameters(): ", dual_model.parameters())
-    # print("dual_extractor.parameters(): ", dual_extractor.parameters())
-    # print("primal_model.parameters(): ", primal_model.parameters())
-    # print("primal_extractor.parameters(): ", extractor.parameters())
-    #input("continue")
 
     dual_scheduler_config = dual_method_config.get('scheduler', {})
     dual_scheduler = None if dual_scheduler_config == {} else ReduceLROnPlateau(dual_optimizer, mode='max', **dual_scheduler_config)
@@ -1128,256 +999,8 @@ def train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_nam
     dual_metric_dict = deepcopy(init_metric_dict)
     dual_writer.add_hparams(hparam_dict=dual_hparam_dict, metric_dict=dual_metric_dict)
 
-    # print('====================================') #NOT SURE ABT THIS 
-    # print('[DUAL INFO] Training GSAT...')
-    # dual_gsat = GSAT(dual_model, dual_extractor, dual_optimizer, dual_scheduler, dual_writer, device, dual_log_dir, dual_dataset_name, dual_num_class, dual_aux_info['multi_label'], random_state, dual_method_config, dual_shared_config)
-    # dual_metric_dict, dual_graph_embeddings = dual_gsat.train(dual_loaders, dual_test_set, dual_metric_dict, dual_model_config.get('use_edge_attr', True))
-
-    gsat = GSAT(primal_model, extractor, primal_optimizer, primal_scheduler, writer, device, log_dir, dataset_name, num_class, aux_info['multi_label'], random_state, method_config, shared_config, model_config, dual_model, dual_extractor, dual_optimizer, dual_scheduler, dual_writer, device, dual_log_dir, dual_dataset_name, dual_num_class, dual_aux_info['multi_label'], random_state, dual_method_config, dual_shared_config, dual_model_config, alpha, lamb)
+    gsat = GSAT(primal_model, extractor, primal_optimizer, primal_scheduler, writer, device, log_dir, dataset_name, num_class, aux_info['multi_label'], random_state, method_config, shared_config, model_config, dual_model, dual_extractor, dual_optimizer, dual_scheduler, dual_writer, device, dual_log_dir, dual_dataset_name, dual_num_class, dual_aux_info['multi_label'], random_state, dual_method_config, dual_shared_config, dual_model_config)
     metric_dict = gsat.train(loaders, dual_loaders, primal_test_set, dual_test_set, metric_dict, model_config.get('use_edge_attr', True))
-
-    #DUAL
-
-    # #MANGO BELOW
-    # # #question is this all projected into the same latent space; i should be using the primal graph training for embeddings right
-    # model.eval()
-    # dual_model.eval()
-
-    # primal_graph_embeddings = []
-
-    # for data in test_set:
-    #     data = data.to(device)
-    #     with torch.no_grad():
-    #         #emb = model.get_emb(data.x, data.edge_index, data.batch, data.edge_attr)
-    #         # if data.batch is None:
-    #         #     batch = torch.zeros(emb.size(0), dtype=torch.long, device=emb.device)
-    #         # else:
-    #         #     batch = data.batch
-    #         batch = torch.zeros(data.x.size(0), dtype=torch.long, device=device)
-    #         graph_emb = model.get_graph_emb(data.x, data.edge_index, batch, data.edge_attr)
-    #         #graph_emb = model.get_pred_from_emb(emb, batch)
-    #         #graph_emb = global_mean_pool(emb, batch)
-    #     primal_graph_embeddings.append(graph_emb.cpu())
-
-    # dual_graph_embeddings = []
-    # for dual_data in dual_test_set:
-    #     dual_data = dual_data.to(device)
-    #     with torch.no_grad():
-    #         batch = torch.zeros(dual_data.x.size(0), dtype=torch.long, device=device)
-    #         # dual_emb = dual_model.get_emb(dual_data.x, dual_data.edge_index, dual_data.batch, dual_data.edge_attr)
-    #         # if dual_data.batch is None:
-    #         #     dual_batch = torch.zeros(dual_emb.size(0), dtype=torch.long, device=dual_emb.device)
-    #         # else:
-    #         #     batch = dual_data.batch
-    #         #dual_graph_emb = dual_model.get_pred_from_emb(dual_emb, dual_batch)
-    #         dual_graph_emb = dual_model.get_graph_emb(dual_data.x, dual_data.edge_index, batch, dual_data.edge_attr)
-    #         # dual_graph_emb = global_mean_pool(dual_emb, batch)
-    #     dual_graph_embeddings.append(dual_graph_emb.cpu())
-
-    ###### FROM HERE for NSA 
-
-    # print('\U0001F96D len(primal_graph_embeddings)', len(primal_graph_embeddings))
-    # print('\U0001F96D len(dual_graph_embeddings)', len(dual_graph_embeddings))
-
-    # # primal_graph_embeddings = torch.cat(primal_graph_embeddings) 
-    # # dual_graph_embeddings = torch.cat(dual_graph_embeddings)
-    # # print('\U0001F96D primal_graph_embeddings.shape', primal_graph_embeddings.shape)
-    # # print('\U0001F96D dual_graph_embeddings.shape', dual_graph_embeddings.shape)
-
-    # local_nsa = LNSA_loss()
-    # global_nsa = NSALoss()
-
-    # from sklearn.decomposition import PCA
-    # from sklearn.manifold import TSNE
-    # import matplotlib.pyplot as plt
-
-    # def safe_reduce(emb):
-    #     emb = emb.copy()
-    #     emb = np.clip(emb, -100, 100)  # Reduce instability
-    #     emb -= np.mean(emb, axis=0)
-    #     emb /= (np.std(emb, axis=0) + 1e-6)
-    #     try:
-    #         reducer = PCA(n_components=2, svd_solver='full')
-    #         return reducer.fit_transform(emb)
-    #     except Exception as e:
-    #         print("PCA failed, using t-SNE instead:", e)
-    #         reducer = TSNE(n_components=2, perplexity=30, init="random", random_state=42)
-    #         return reducer.fit_transform(emb)
-
-    # for i in range(model_config['pretrain_epochs']):
-    #     print(f"\U0001F96D ========== epoch{i} =========")
-
-    #     # NSA values
-    #     g_nsa = global_nsa(primal_graph_embeddings[i], dual_graph_embeddings[i])
-    #     l_nsa = local_nsa(primal_graph_embeddings[i], dual_graph_embeddings[i])
-    #     nsa = g_nsa + l_nsa
-
-    #     print("\U0001F96D global_nsa:", g_nsa)
-    #     print("\U0001F96D local_nsa:", l_nsa)
-    #     print("\U0001F96D nsa:", nsa)
-
-    #     # ---- t-SNE Visualization ----
-    #     p_np = primal_graph_embeddings[i].detach().cpu().numpy()
-    #     d_np = dual_graph_embeddings[i].detach().cpu().numpy()
-
-    #     all_embeddings = np.vstack([p_np, d_np])
-    #     labels = np.array(['Primal'] * len(p_np) + ['Dual'] * len(d_np))
-
-    #     # t-SNE projection
-    #     tsne = TSNE(n_components=2, perplexity=30, init='random', random_state=42)
-    #     emb_2d = tsne.fit_transform(all_embeddings)
-
-    #     plt.figure(figsize=(8, 6))
-
-    #     # Draw lines connecting matching primal/dual embeddings
-    #     for j in range(len(p_np)):
-    #         p = emb_2d[j]
-    #         d = emb_2d[j + len(p_np)]
-    #         plt.plot([p[0], d[0]], [p[1], d[1]], color='gray', linewidth=0.5, alpha=0.4)
-
-    #     # Scatter points
-    #     plt.scatter(emb_2d[:len(p_np), 0], emb_2d[:len(p_np), 1], label='Primal', alpha=0.8)
-    #     plt.scatter(emb_2d[len(p_np):, 0], emb_2d[len(p_np):, 1], label='Dual', alpha=0.8)
-
-    #     plt.title(f"t-SNE: Primal vs Dual Embeddings (Epoch {i})")
-    #     plt.legend()
-    #     plt.tight_layout()
-    #     plt.show()
-
-    #     import os
-
-    #     os.makedirs('../Graph_Visualizations_MUTAG/t-SNE_over_100_epochs/', exist_ok=True)
-
-    #     if i % 10 == 0:
-    #         plt.savefig(f"../Graph_Visualizations_MUTAG/t-SNE_over_100_epochs/t-SNE_Epoch_{i}.png", dpi=300, bbox_inches='tight')
-
-    #     # input("continue to pca")
-        
-    #     # pca = PCA(n_components=2)
-    #     # emb_2d_pca = pca.fit_transform(all_embeddings)
-
-    #     # plt.figure(figsize=(8, 6))
-
-    #     # for j in range(len(p_np)):
-    #     #     p = emb_2d_pca[j]
-    #     #     d = emb_2d_pca[j + len(p_np)]
-    #     #     plt.plot([p[0], d[0]], [p[1], d[1]], color='gray', linewidth=0.5, alpha=0.4)
-
-    #     # plt.scatter(emb_2d_pca[:len(p_np), 0], emb_2d_pca[:len(p_np), 1], label='Primal', alpha=0.8)
-    #     # plt.scatter(emb_2d_pca[len(p_np):, 0], emb_2d_pca[len(p_np):, 1], label='Dual', alpha=0.8)
-
-    #     # plt.title(f"PCA: Primal vs Dual Embeddings (Epoch {i})")
-    #     # plt.legend()
-    #     # plt.tight_layout()
-    #     # plt.show()
-
-        
-    #     input("Continue to next epoch...")
-
-    ###### TILL HERE
-
-
-        # # Convert embeddings
-        # p_emb = primal_graph_embeddings[i]
-        # d_emb = dual_graph_embeddings[i]
-
-        # if isinstance(p_emb, list):
-        #     p_emb = torch.stack(p_emb)
-        # if isinstance(d_emb, list):
-        #     d_emb = torch.stack(d_emb)
-
-        # p_np = p_emb.detach().cpu().numpy()
-        # d_np = d_emb.detach().cpu().numpy()
-
-        # assert p_np.shape == d_np.shape, f"Shape mismatch: {p_np.shape} vs {d_np.shape}"
-
-        # # Reduce and visualize
-        # all_embeddings = np.vstack([p_np, d_np])
-        # emb_2d = safe_reduce(all_embeddings)
-
-        # plt.figure(figsize=(8, 6))
-        # for j in range(len(p_np)):
-        #     p = emb_2d[j]
-        #     d = emb_2d[j + len(p_np)]
-        #     plt.plot([p[0], d[0]], [p[1], d[1]], color='gray', linewidth=0.5, alpha=0.4)
-
-        # plt.scatter(emb_2d[:len(p_np), 0], emb_2d[:len(p_np), 1], label='Primal', alpha=0.8)
-        # plt.scatter(emb_2d[len(p_np):, 0], emb_2d[len(p_np):, 1], label='Dual', alpha=0.8)
-
-        # plt.title(f"Epoch {i}: Primal vs Dual Embeddings")
-        # plt.legend()
-        # plt.tight_layout()
-        # plt.savefig(f"pca_epoch_{i}.png")  # save instead of show to avoid hanging
-        # plt.close()
-
-        #input("continue nsa")
-
-
-        # if isinstance(primal_graph_embeddings, list):
-        #     primal_graph_embeddings = torch.cat(primal_graph_embeddings)
-        # if isinstance(dual_graph_embeddings, list):
-        #     dual_graph_embeddings = torch.cat(dual_graph_embeddings)
-
-        # norm_nsa = global_nsa(F.normalize(primal_graph_embeddings, p=2, dim=1), F.normalize(dual_graph_embeddings, p=2, dim=1)) + local_nsa(F.normalize(primal_graph_embeddings, p=2, dim=1), F.normalize(dual_graph_embeddings, p=2, dim=1))
-        # print("\U0001F96D norm nsa:", norm_nsa)
-        # input("continue norm nsa")
-
-        # N, D = 435, 64
-
-        # real_mean = primal_graph_embeddings.mean()
-        # real_std = primal_graph_embeddings.std()
-
-        # rand1_graph_embeddings = torch.randn(N, D) * real_std + real_mean
-        # rand2_graph_embeddings = torch.randn(N, D) * real_std + real_mean
-
-        # nsa_score = global_nsa(rand1_graph_embeddings, rand2_graph_embeddings) + local_nsa(rand1_graph_embeddings, rand2_graph_embeddings)
-        # print(f"NSA loss with rand embeddings:", nsa_score)
-        # input('continue rand emb')
-
-        # import random
-        # import time
-
-        # seed = int(time.time())
-        # torch.manual_seed(seed)
-        # random.seed(seed)
-
-        # N = primal_graph_embeddings.size(0)
-        # perm = torch.randperm(N)
-        # shuffled_dual_embeddings = dual_graph_embeddings[perm]
-        # nsa_shuffled = global_nsa(primal_graph_embeddings, shuffled_dual_embeddings) + local_nsa(primal_graph_embeddings, shuffled_dual_embeddings)
-        # print(f"NSA loss with shuffled dual embeddings:",  nsa_shuffled)
-        # input('continue shuffled emb')
-
-        
-
-        # N = primal_graph_embeddings.size(0)
-        # perm = torch.randperm(N)
-        # shuffled_primal_embeddings = primal_graph_embeddings[perm]
-        # nsa_shuffled_same = global_nsa(primal_graph_embeddings, shuffled_primal_embeddings) + local_nsa(primal_graph_embeddings, shuffled_primal_embeddings)
-        # print(f"NSA loss with shuffled same embeddings:", nsa_shuffled_same)
-        # input('continue shuffled same emb')
-
-        # norm_nsa = global_nsa(F.normalize(primal_graph_embeddings, p=2, dim=1), F.normalize(shuffled_primal_embeddings, p=2, dim=1)) + local_nsa(F.normalize(primal_graph_embeddings, p=2, dim=1), F.normalize(shuffled_primal_embeddings, p=2, dim=1))
-        # print("\U0001F96D norm nsa:", norm_nsa)
-        # input("continue norm nsa")
-
-        # nsa_actually_same = global_nsa(primal_graph_embeddings, primal_graph_embeddings) + local_nsa(primal_graph_embeddings, primal_graph_embeddings)
-        # print(f"NSA actually same embeddings:", nsa_actually_same)
-        # input('continue shuffled same emb')
-
-        # N = dual_graph_embeddings.size(0)
-        # perm = torch.randperm(N)
-        # shuffled_dual_embeddings = dual_graph_embeddings[perm]
-        # nsa_shuffled_same = global_nsa(dual_graph_embeddings, shuffled_dual_embeddings) + local_nsa(dual_graph_embeddings, shuffled_dual_embeddings)
-        # print(f"NSA loss with shuffled same dual embeddings:", nsa_shuffled_same)
-        # input('continue shuffled same dual emb')
-
-        # norm_nsa = global_nsa(F.normalize(shuffled_dual_embeddings, p=2, dim=1), F.normalize(dual_graph_embeddings, p=2, dim=1)) + local_nsa(F.normalize(shuffled_dual_embeddings, p=2, dim=1), F.normalize(dual_graph_embeddings, p=2, dim=1))
-        # print("\U0001F96D norm nsa:", norm_nsa)
-        # input("continue norm nsa")
-
-    # # MANGO ABOVE
-
     writer.add_hparams(hparam_dict=hparam_dict, metric_dict=metric_dict)
     return hparam_dict, metric_dict
 
@@ -1415,47 +1038,48 @@ def main():
     time = datetime.now().strftime("%m_%d_%Y-%H_%M_%S")
     device = torch.device(f'cuda:{cuda_id}' if cuda_id >= 0 else 'cpu')
 
-    # metric_dicts = []
-    # for random_state in range(num_seeds):
-    #     log_dir = data_dir / dataset_name / 'logs' / (time + '-' + dataset_name + '-' + model_name + '-seed' + str(random_state) + '-' + method_name)
-    #     hparam_dict, metric_dict = train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_name, method_name, device, random_state)
-    #     metric_dicts.append(metric_dict)
+    metric_dicts = []
+    for random_state in range(num_seeds):
+        log_dir = data_dir / dataset_name / 'logs' / (time + '-' + dataset_name + '-' + model_name + '-seed' + str(random_state) + '-' + method_name)
+        hparam_dict, metric_dict = train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_name, method_name, device, random_state)
+        metric_dicts.append(metric_dict)
 
-    alphas = [0.1, 0.3, 0.5, 0.7, 0.9]
-    lambdas = [0.01, 0.1, 0.3, 0.5]
+    # alphas = [0.1, 0.3, 0.5, 0.7, 0.9]
+    # lambdas = [0.01, 0.1, 0.3, 0.5]
 
-    best_score = -float("inf")
-    best_params = None
+    # best_score = -float("inf")
+    # best_params = None
 
-    for alpha in alphas:
-        for lamb in lambdas:
-            print(f"Trying alpha={alpha}, lambda_att={lamb}")
-            metric_dicts = []
+    # for alpha in alphas:
+    #     for lamb in lambdas:
+    #         print(f"Trying alpha={alpha}, lambda_att={lamb}")
+    #         metric_dicts = []
 
-            # Run training across seeds
-            for random_state in range(num_seeds):
+    #         # Run training across seeds
+    #         for random_state in range(num_seeds):
 
-                log_dir = data_dir / dataset_name / 'logs' / (
-                    time + '-' + dataset_name + '-' + model_name + 
-                    f'-alpha{alpha}-lambda{lamb}-seed{random_state}-' + method_name
-                )
+    #             log_dir = data_dir / dataset_name / 'logs' / (
+    #                 time + '-' + dataset_name + '-' + model_name + 
+    #                 f'-alpha{alpha}-lambda{lamb}-seed{random_state}-' + method_name
+    #             )
 
-                hparam_dict, metric_dict = train_gsat_one_seed(
-                    local_config, data_dir, log_dir, model_name, dataset_name, 
-                    method_name, device, random_state, alpha, lamb
-                )
-                metric_dicts.append(metric_dict)
+    #             hparam_dict, metric_dict = train_gsat_one_seed(
+    #                 local_config, data_dir, log_dir, model_name, dataset_name, 
+    #                 method_name, device, random_state, alpha, lamb
+    #             )
+    #             metric_dicts.append(metric_dict)
 
-            avg_metric = sum([m['metric/best_clf_valid'] for m in metric_dicts]) / len(metric_dicts)
+    #         avg_metric = sum([m['metric/best_clf_valid'] for m in metric_dicts]) / len(metric_dicts)
 
-            print(f"alpha={alpha}, lambda_att={lamb}, val acc = {avg_metric:.4f}")
+    #         print(f"alpha={alpha}, lambda_att={lamb}, val acc = {avg_metric:.4f}")
 
-            if avg_metric > best_score:
-                best_score = avg_metric
-                best_params = (alpha, lamb)
+    #         if avg_metric > best_score:
+    #             best_score = avg_metric
+    #             best_params = (alpha, lamb)
 
-    print(f"Best params: alpha={best_params[0]}, lambda_att={best_params[1]}")
-    print(f"Best validation accuracy: {best_score:.4f}")
+    # print(f"Best params: alpha={best_params[0]}, lambda_att={best_params[1]}")
+    # print(f"Best validation accuracy: {best_score:.4f}")
+
 
     log_dir = data_dir / dataset_name / 'logs' / (time + '-' + dataset_name + '-' + model_name + '-seed99-' + method_name + '-stat')
     log_dir.mkdir(parents=True, exist_ok=True)
