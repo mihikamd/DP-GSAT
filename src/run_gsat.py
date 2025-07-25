@@ -155,15 +155,27 @@ class GSAT(nn.Module):
         #primal_masked_emb = primal_emb * primal_node_mask.unsqueeze(-1)
 
         primal_att_log_logits = self.primal_extractor(primal_emb, primal_data.edge_index, primal_data.batch)
+
+        #print("primal_att_log_logits:", primal_att_log_logits[:10])
+
         primal_node_att = self.sampling(primal_att_log_logits, epoch, training)
+
 
         # Dual 
         dual_emb = self.dual_clf.get_emb(dual_data.x, dual_data.edge_index, batch=dual_data.batch, edge_attr=dual_data.edge_attr)
         dual_att_log_logits = self.dual_extractor(dual_emb, dual_data.edge_index, dual_data.batch)
 
-        dual_node_att = F.gumbel_softmax(dual_att_log_logits, tau=1.0, hard=True, dim=-1)[:, 0]
-        dual_node_att = dual_node_att.unsqueeze(-1)
-       #dual_node_att = self.sampling(dual_att_log_logits, epoch, training)
+        #print("dual_att_log_logits:", dual_att_log_logits[:10])
+
+        dual_node_att = self.sampling(dual_att_log_logits, epoch, training)
+
+        #dual_node_att = F.gumbel_softmax(dual_att_log_logits, tau = 1, hard = False ,dim = -1)[:,0]
+        #dual_node_att = dual_node_att.unsqueeze(-1)
+
+        att_strength_penalty = dual_node_att.mean()  # or dual_node_att.norm(p=2)
+
+        att_var_penalty = -torch.var(dual_node_att)
+        dual_node_att_other = self.sampling(dual_att_log_logits, epoch, training)
 
         if self.dual_learn_edge_att:
             if is_undirected(dual_data.edge_index):
@@ -373,13 +385,14 @@ class GSAT(nn.Module):
         # axes[0, 1].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
         # axes[0, 1].set_title('Dual Node Attention')
 
-        # # Combined Attention
-        # sns.heatmap(comb_att.detach().cpu().numpy().reshape(1, -1), ax=axes[1, 0], cmap='coolwarm', center=0)
+        # sns.heatmap(dual_node_att_other.detach().cpu().numpy().reshape(1, -1), ax=axes[1,0], cmap='coolwarm', center=0)
         # axes[1, 0].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
-        # axes[1, 0].set_title('Combined Attention')
+        # axes[1, 0].set_title('Dual Node Attention w/o gumbel')
 
-        # # Remove the old Ground Truth Mask subplot
-        # fig.delaxes(axes[1, 1])
+        # # Combined Attention
+        # sns.heatmap(comb_att.detach().cpu().numpy().reshape(1, -1), ax=axes[1, 1], cmap='coolwarm', center=0)
+        # axes[1, 1].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
+        # axes[1, 1].set_title('Combined Attention')
 
         # # Final layout
         # plt.suptitle(f'Attention Visualizations with Ground Truth - Epoch {epoch}')
@@ -388,7 +401,7 @@ class GSAT(nn.Module):
 
         loss, loss_dict = self.__loss__(primal_edge_att, dual_edge_att, primal_clf_logits, dual_clf_logits, primal_data.y, dual_data.y, epoch)
 
-        #loss += self.lamb * dual_sparsity_loss
+        loss += self.lamb * (att_strength_penalty + att_var_penalty)
 
         return primal_edge_att, loss, loss_dict, primal_clf_logits
         
@@ -1433,8 +1446,7 @@ def main():
                 )
                 metric_dicts.append(metric_dict)
 
-            # Average metric you're optimizing
-            avg_metric = sum([m['val/acc'] for m in metric_dicts]) / len(metric_dicts)
+            avg_metric = sum([m['metric/best_clf_valid'] for m in metric_dicts]) / len(metric_dicts)
 
             print(f"alpha={alpha}, lambda_att={lamb}, val acc = {avg_metric:.4f}")
 
