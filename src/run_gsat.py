@@ -137,6 +137,8 @@ class GSAT(nn.Module):
         dual_pred_loss = dual_pred_loss * self.dual_pred_loss_coef
         dual_info_loss = dual_info_loss * self.dual_info_loss_coef
 
+        # print(f"primal_info_loss: {primal_info_loss}, primal_pred_loss: {primal_pred_loss}, dual_info_loss: {dual_info_loss}, dual_pred_loss: {dual_pred_loss}")
+
         loss = primal_pred_loss + dual_pred_loss + primal_info_loss + dual_info_loss
         primal_loss_dict = {'loss': loss.item(), 'pred': primal_pred_loss.item(), 'info': primal_info_loss.item()}
         dual_loss_dict = {'loss': loss.item(), 'pred': dual_pred_loss.item(), 'info': dual_info_loss.item()}
@@ -147,8 +149,13 @@ class GSAT(nn.Module):
         return loss, loss_dict
     
     def f1_sparsity_loss(self, p_uv, y_uv, eps=1e-6):
-        TP = (p_uv * y_uv).sum()
+        TP = TP = (p_uv.view(-1) * y_uv.view(-1)).sum()
 
+
+        # print(f"p_uv.shape: {p_uv.shape}, y_uv.shape: {y_uv.shape}")
+        # print("p_uv: ", p_uv)
+        # print("y_uv: ", y_uv)
+        # print("p_uv * y_uv: ", (p_uv.view(-1) * y_uv.view(-1)))
         P = p_uv.sum()
 
         G = y_uv.sum()
@@ -157,13 +164,28 @@ class GSAT(nn.Module):
         recall = TP / (G + eps)
 
         assert (p_uv >= 0).all() and (p_uv <= 1).all()
+        assert (y_uv >= 0).all() and (y_uv <= 1).all()
+        if (y_uv == 0).all():
+            input("all zero")
 
         f1 = 2 * precision * recall / (precision + recall + eps)
 
-        print(f"TP={TP.item()}, P={P.item()}, G={G.item()}, precision={precision.item()}, recall={recall.item()}, f1={f1.item()}")
+        l1_loss = p_uv.abs().mean()
 
-        return 1 - f1
+        # Total loss
+        total_loss = (1 - f1) + l1_loss
+
+        #print(f"TP={TP.item()}, P={P.item()}, G={G.item()}, precision={precision.item()}, recall={recall.item()}, f1={f1.item()}")
+
+        return total_loss
     
+    def gumbel_sigmoid(self, logits, tau=1.0, eps=1e-10):
+        """Differentiable binary Gumbel-sigmoid sampling."""
+        U = torch.rand_like(logits)
+        g = -torch.log(-torch.log(U + eps) + eps)
+        y = torch.sigmoid((logits + g) / tau)
+        return y
+        
     def dual_forward_pass(self, primal_data, dual_data, epoch, training):
         # Primal 
         primal_emb = self.primal_clf.get_emb(primal_data.x, primal_data.edge_index, batch=primal_data.batch, edge_attr=primal_data.edge_attr)
@@ -186,13 +208,21 @@ class GSAT(nn.Module):
         dual_emb = self.dual_clf.get_emb(dual_data.x, dual_data.edge_index, batch=dual_data.batch, edge_attr=dual_data.edge_attr)
         dual_att_log_logits = self.dual_extractor(dual_emb, dual_data.edge_index, dual_data.batch, "dual")
 
+
+        # min_val = dual_att_log_logits.min()
+        # max_val = dual_att_log_logits.max()
+
+        # dual_att_log_logits = (dual_att_log_logits - min_val) / (max_val - min_val + 1e-6)
         #print("dual_att_log_logits:", dual_att_log_logits[:10])
 
         
-        dual_node_att = self.sampling(dual_att_log_logits, epoch, training)
+        #dual_node_att = self.sampling(dual_att_log_logits, epoch, training)
 
-        #dual_node_att = F.gumbel_softmax(dual_att_log_logits, tau = 1, hard = False ,dim = -1)[:,0]
-        #dual_node_att = dual_node_att.unsqueeze(-1)
+        #dual_node_att = F.gumbel_softmax(dual_att_log_logits, tau = 0.1 ,dim = -1)[:,0]
+        dual_node_att = self.gumbel_sigmoid(dual_att_log_logits, tau = 0.1)[:,0]
+        dual_node_att = dual_node_att.unsqueeze(-1)
+        #dual_node_att = self.sampling(dual_att_log_logits, epoch, training)
+
         y_uv = primal_data.edge_label.float().to(dual_node_att.device)
         f1_loss = self.f1_sparsity_loss(dual_node_att, y_uv)
 
@@ -246,11 +276,11 @@ class GSAT(nn.Module):
         loss, loss_dict = self.__loss__(primal_edge_att, dual_edge_att, primal_clf_logits, dual_clf_logits, primal_data.y, dual_data.y, dual_att_log_logits, epoch)
 
         #loss += self.lamb * (att_strength_penalty + att_var_penalty)
-        print(loss)
-        print(f1_loss)
-        loss += f1_loss*0.01
-        print(loss)
-        input('loss')
+        #print("loss: ", loss)
+        #print("f1_loss: ", f1_loss)
+        loss += f1_loss
+        #print("final loss: ", loss)
+        #input('loss')
 
 
         # for g in range(15):
