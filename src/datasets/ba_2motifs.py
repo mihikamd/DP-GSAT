@@ -21,9 +21,20 @@ def read_ba2motif_data(folder: str, prefix):
         dense_edges, node_features, graph_labels = pickle.load(f)
 
     data_list = []
-    for graph_idx in range(dense_edges.shape[0]):
+    for graph_idx, graph in enumerate(dense_edges):
+        for node1 in range(graph.shape[0]):
+            for node2 in range(graph.shape[1]):
+                if(node1 == node2):
+                    graph[node1][node2] = 0
         x = torch.from_numpy(node_features[graph_idx]).float()
         edge_index = dense_to_sparse(torch.from_numpy(dense_edges[graph_idx]))[0]
+
+        # Sort each edge (i, j) so (i, j) and (j, i) become the same
+        sorted_edge_index = torch.sort(edge_index, dim=0)[0]
+        # Remove duplicates
+        edge_index = torch.unique(sorted_edge_index, dim=1)
+
+
         y = torch.from_numpy(np.where(graph_labels[graph_idx])[0]).reshape(-1, 1).float()
 
         node_label = torch.zeros(x.shape[0]).float()
@@ -34,6 +45,8 @@ def read_ba2motif_data(folder: str, prefix):
         mask = ((edge_index[0] >= 20) & (edge_index[0] < 25) & (edge_index[1] >= 20) & (edge_index[1] < 25))
         edge_label[mask] = 1.0
 
+        if graph_idx == 1:
+            print("graph 1:",  edge_index.shape[1])
         # if graph_idx < 10:
         #     edge_att = torch.ones(edge_index.shape[1])
         #     fig, ax = plt.subplots()
