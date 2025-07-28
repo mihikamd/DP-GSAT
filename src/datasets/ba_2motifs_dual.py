@@ -78,6 +78,9 @@ def read_ba2motif_data(folder: str, prefix):
             if dual_node_label[i] == 1 and dual_node_label[j] == 1:
                 dual_edge_label[edge_idx] = 1
 
+        if graph_idx == 1:
+            print("graph 1:",  len(dual_node_label))
+
         # if graph_idx < 10:
         #     edge_att = torch.ones(edge_index.shape[1])
         #     fig, ax = plt.subplots()

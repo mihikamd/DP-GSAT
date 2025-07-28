@@ -14,7 +14,7 @@ model_config:
   pretrain_epochs: 100
 
 shared_config:
-  learn_edge_att: true
+  learn_edge_att: false
   precision_k: 5
   num_viz_samples: 8
   viz_interval: 10
@@ -23,7 +23,7 @@ shared_config:
 
 GSAT_config:
   method_name: 'GSAT'
-  epochs: 300
+  epochs: 100
   lr: 1.0e-3
   pred_loss_coef: 1
   info_loss_coef: 1

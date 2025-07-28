@@ -149,7 +149,7 @@ class GSAT(nn.Module):
         return loss, loss_dict
     
     def f1_sparsity_loss(self, p_uv, y_uv, eps=1e-6):
-        TP = TP = (p_uv.view(-1) * y_uv.view(-1)).sum()
+        TP = (p_uv.view(-1) * y_uv.view(-1)).sum()
 
 
         # print(f"p_uv.shape: {p_uv.shape}, y_uv.shape: {y_uv.shape}")
@@ -165,8 +165,9 @@ class GSAT(nn.Module):
 
         assert (p_uv >= 0).all() and (p_uv <= 1).all()
         assert (y_uv >= 0).all() and (y_uv <= 1).all()
-        if (y_uv == 0).all():
-            input("all zero")
+        # if not (y_uv == 0).all():
+        #     print(y_uv)
+        #     input("not all zero")
 
         f1 = 2 * precision * recall / (precision + recall + eps)
 
@@ -188,8 +189,10 @@ class GSAT(nn.Module):
         
     def dual_forward_pass(self, primal_data, dual_data, epoch, training):
         # Primal 
+        
         primal_emb = self.primal_clf.get_emb(primal_data.x, primal_data.edge_index, batch=primal_data.batch, edge_attr=primal_data.edge_attr)
 
+        
         #primal_mask_logits = self.primal_mask_mlp(primal_emb)  # [n_nodes, 2]
         #primal_node_mask = F.gumbel_softmax(primal_mask_logits, tau=1.0, hard=True, dim=-1)[:, 0]  # [n_nodes]
 
@@ -221,7 +224,8 @@ class GSAT(nn.Module):
         #dual_node_att = F.gumbel_softmax(dual_att_log_logits, tau = 0.1 ,dim = -1)[:,0]
         dual_node_att = self.gumbel_sigmoid(dual_att_log_logits, tau = 0.1)[:,0]
         dual_node_att = dual_node_att.unsqueeze(-1)
-        #dual_node_att = self.sampling(dual_att_log_logits, epoch, training)
+        # dual_node_att = self.sampling(dual_att_log_logits, epoch, training)
+        
 
         y_uv = primal_data.edge_label.float().to(dual_node_att.device)
         f1_loss = self.f1_sparsity_loss(dual_node_att, y_uv)
@@ -248,6 +252,12 @@ class GSAT(nn.Module):
         else:
             primal_edge_att = self.lift_node_att_to_edge_att(primal_node_att, primal_data.edge_index)
             old_primal_edge_att = self.lift_node_att_to_edge_att(primal_node_att, primal_data.edge_index)
+
+        print("primal_edge_att: ", primal_edge_att.shape)
+        print("dual_node_att:", dual_node_att.shape)
+        print("dual_edge_att:", dual_edge_att.shape)
+        print("primal_data.edge_label:", primal_data.edge_label.shape)
+        print("dual_data.edge_label:", dual_data.edge_label.shape)
 
         if (epoch > 50):
             primal_edge_att = 0.3 * dual_node_att + (1 - 0.3) * primal_edge_att
@@ -391,39 +401,39 @@ class GSAT(nn.Module):
         # fig.canvas.manager.set_window_title(f"Comb Att Epoch {epoch}")
         # plt.show()
         # plt.close()
-        if (epoch % 10 == 0):
-            ground_truth_mask = primal_data.edge_label
+        # if (epoch % 10 == 0):
+        #     ground_truth_mask = primal_data.edge_label
 
-            fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        #     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 
-            # Get binary mask as indices
-            gt_indices = torch.nonzero(ground_truth_mask == 1)  # returns tensor of shape [N, 1]
-            gt_indices = gt_indices.view(-1).cpu().numpy()     
+        #     # Get binary mask as indices
+        #     gt_indices = torch.nonzero(ground_truth_mask == 1)  # returns tensor of shape [N, 1]
+        #     gt_indices = gt_indices.view(-1).cpu().numpy()     
 
 
-            # Primal Edge Attention
-            sns.heatmap(primal_edge_att.detach().cpu().numpy().reshape(1, -1), ax=axes[0, 0], cmap='coolwarm', center=0)
-            axes[0, 0].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
-            axes[0, 0].set_title('Primal Edge Attention')
+        #     # Primal Edge Attention
+        #     sns.heatmap(primal_edge_att.detach().cpu().numpy().reshape(1, -1), ax=axes[0, 0], cmap='coolwarm', center=0)
+        #     axes[0, 0].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
+        #     axes[0, 0].set_title('Primal Edge Attention')
 
-            # Dual Node Attention
-            sns.heatmap(dual_node_att.detach().cpu().numpy().reshape(1, -1), ax=axes[0, 1], cmap='coolwarm', center=0)
-            axes[0, 1].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
-            axes[0, 1].set_title('Dual Node Attention')
+        #     # Dual Node Attention
+        #     sns.heatmap(dual_node_att.detach().cpu().numpy().reshape(1, -1), ax=axes[0, 1], cmap='coolwarm', center=0)
+        #     axes[0, 1].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
+        #     axes[0, 1].set_title('Dual Node Attention')
 
-            sns.heatmap(dual_node_att_other.detach().cpu().numpy().reshape(1, -1), ax=axes[1,0], cmap='coolwarm', center=0)
-            axes[1, 0].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
-            axes[1, 0].set_title('Dual Node Attention w/o gumbel')
+        #     sns.heatmap(dual_node_att_other.detach().cpu().numpy().reshape(1, -1), ax=axes[1,0], cmap='coolwarm', center=0)
+        #     axes[1, 0].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
+        #     axes[1, 0].set_title('Dual Node Attention w/o gumbel')
 
-            # Combined Attention
-            sns.heatmap(comb_att.detach().cpu().numpy().reshape(1, -1), ax=axes[1, 1], cmap='coolwarm', center=0)
-            axes[1, 1].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
-            axes[1, 1].set_title('Combined Attention')
+        #     # Combined Attention
+        #     sns.heatmap(comb_att.detach().cpu().numpy().reshape(1, -1), ax=axes[1, 1], cmap='coolwarm', center=0)
+        #     axes[1, 1].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
+        #     axes[1, 1].set_title('Combined Attention')
 
-            # Final layout
-            plt.suptitle(f'Attention Visualizations with Ground Truth - Epoch {epoch}')
-            plt.tight_layout()
-            plt.show()
+        #     # Final layout
+        #     plt.suptitle(f'Attention Visualizations with Ground Truth - Epoch {epoch}')
+        #     plt.tight_layout()
+        #     plt.show()
 
         return primal_edge_att, loss, loss_dict, primal_clf_logits
         
@@ -913,7 +923,9 @@ class ExtractorMLP(nn.Module):
                 f1, f2 = emb[col], emb[row]
                 f12 = torch.cat([f1, f2], dim=-1)
                 att_log_logits = self.primal_feature_extractor(f12, batch[col])
+                print("here2")
             else:
+                print("here")
                 att_log_logits = self.primal_feature_extractor(emb, batch)
             return att_log_logits
         elif (type == "dual"):
@@ -962,9 +974,14 @@ def train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_nam
     batch_size, splits = data_config['batch_size'], data_config.get('splits', None)
     loaders, primal_test_set, x_dim, edge_attr_dim, num_class, aux_info = get_data_loaders(data_dir, dataset_name, batch_size, splits, random_state, data_config.get('mutag_x', False))
 
+    for batch in loaders["train"]:
+        print("primal loaders at train gsat one seed: ", batch.edge_label.shape)
+
     #DUAL
     dual_loaders, dual_test_set, dual_x_dim, dual_edge_attr_dim, dual_num_class, dual_aux_info = get_data_loaders(data_dir, dual_dataset_name, batch_size, splits, random_state, data_config.get('mutag_x', False))
     
+    for batch in dual_loaders["train"]:
+        print("dual loaders at train gsat one seed: ", batch.node_label.shape)
     #input(dual_x_dim)
     #DUAL
 
