@@ -122,8 +122,7 @@ def get_random_split_idx(dataset, splits, random_state=None, mutag_x=False):
         #n_train = int(splits['train'] * len(idx))
         n_train, n_valid = int(splits['train'] * len(idx)), int(splits['valid'] * len(idx))
         train_idx, valid_idx = idx[:n_train], idx[n_train:]
-        test_idx = idx[n_train+n_valid:] #MANGO
-        #test_idx = [i for i in range(len(dataset)) if (dataset[i].y.squeeze() == 0 and dataset[i].edge_label.sum() > 0)] # MANGO ASK CALLIE WHY ?*
+        test_idx = [i for i in range(len(dataset)) if (dataset[i].y.squeeze() == 0 and dataset[i].edge_label.sum() > 0)]
     return {'train': train_idx, 'valid': valid_idx, 'test': test_idx}
 
 
