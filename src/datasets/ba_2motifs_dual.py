@@ -90,6 +90,8 @@ def read_ba2motif_data(folder: str, prefix):
         #     input("continue to next graph")
 
         data_list.append(Data(x=x, edge_index=edge_index, y=y, node_label=dual_node_label, edge_label=dual_edge_label))
+    print(len(data_list))
+    input("continue")
     return data_list
 
 

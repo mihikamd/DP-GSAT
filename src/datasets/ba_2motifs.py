@@ -28,7 +28,11 @@ def read_ba2motif_data(folder: str, prefix):
 
         node_label = torch.zeros(x.shape[0]).float()
         node_label[20:] = 1
-        edge_label = ((edge_index[0] >= 20) & (edge_index[0] < 25) & (edge_index[1] >= 20) & (edge_index[1] < 25)).float()
+        #edge_label = ((edge_index[0] >= 20) & (edge_index[0] < 25) & (edge_index[1] >= 20) & (edge_index[1] < 25)).float()
+        edge_label = torch.zeros(edge_index.shape[1]).float()
+
+        mask = ((edge_index[0] >= 20) & (edge_index[0] < 25) & (edge_index[1] >= 20) & (edge_index[1] < 25))
+        edge_label[mask] = 1.0
 
         # if graph_idx < 10:
         #     edge_att = torch.ones(edge_index.shape[1])
@@ -42,6 +46,8 @@ def read_ba2motif_data(folder: str, prefix):
         #     input("continue to next graph")
 
         data_list.append(Data(x=x, edge_index=edge_index, y=y, node_label=node_label, edge_label=edge_label))
+    print(len(data_list))
+    input("continue")
     return data_list
 
 

@@ -149,7 +149,10 @@ class GSAT(nn.Module):
         return loss, loss_dict
     
     def f1_sparsity_loss(self, p_uv, y_uv, eps=1e-6):
-        TP = TP = (p_uv.view(-1) * y_uv.view(-1)).sum()
+        # print(f"p_uv.shape: {p_uv.shape}, y_uv.shape: {y_uv.shape}")
+        # print("p_uv: ", p_uv)
+        # print("y_uv: ", y_uv)
+        TP = (p_uv.view(-1) * y_uv.view(-1)).sum()
 
 
         # print(f"p_uv.shape: {p_uv.shape}, y_uv.shape: {y_uv.shape}")
@@ -165,8 +168,9 @@ class GSAT(nn.Module):
 
         assert (p_uv >= 0).all() and (p_uv <= 1).all()
         assert (y_uv >= 0).all() and (y_uv <= 1).all()
-        if (y_uv == 0).all():
-            input("all zero")
+        #if (y_uv == 0).all():
+            #print(y_uv)
+            #input("all zero")
 
         f1 = 2 * precision * recall / (precision + recall + eps)
 
@@ -178,6 +182,35 @@ class GSAT(nn.Module):
         #print(f"TP={TP.item()}, P={P.item()}, G={G.item()}, precision={precision.item()}, recall={recall.item()}, f1={f1.item()}")
 
         return total_loss
+    
+    def fidelity_loss(self, primal_data, dual_data, primal_att, dual_att, top_k=5):
+        _, topk_indices = torch.topk(primal_att.view(-1), k=top_k)
+
+        masked_att = primal_att.clone()
+        masked_att.view(-1)[topk_indices] = 0
+
+        with torch.no_grad():
+            y_original = self.primal_clf(primal_data.x, primal_data.edge_index, primal_data.batch,
+                                            edge_attr=primal_data.edge_attr, edge_atten=primal_att)
+            y_masked = self.primal_clf(primal_data.x, primal_data.edge_index, primal_data.batch,
+                                            edge_attr=primal_data.edge_attr, edge_atten=masked_att)
+        primal_loss = (y_original - y_masked).abs().mean()
+
+        _, topk_indices = torch.topk(dual_att.view(-1), k=top_k)
+
+        masked_att = dual_att.clone()
+        masked_att.view(-1)[topk_indices] = 0
+
+        with torch.no_grad():
+            y_original = self.dual_clf(dual_data.x, dual_data.edge_index, dual_data.batch,
+                                            edge_attr=dual_data.edge_attr, edge_atten=dual_att)
+            y_masked = self.dual_clf(dual_data.x, dual_data.edge_index, dual_data.batch,
+                                            edge_attr=dual_data.edge_attr, edge_atten=masked_att)
+        dual_loss = (y_original - y_masked).abs().mean()
+
+        loss = primal_loss + dual_loss
+
+        return loss
     
     def gumbel_sigmoid(self, logits, tau=1.0, eps=1e-10):
         """Differentiable binary Gumbel-sigmoid sampling."""
@@ -203,7 +236,6 @@ class GSAT(nn.Module):
 
         primal_node_att = self.sampling(primal_att_log_logits, epoch, training)
 
-
         # Dual 
         dual_emb = self.dual_clf.get_emb(dual_data.x, dual_data.edge_index, batch=dual_data.batch, edge_attr=dual_data.edge_attr)
         dual_att_log_logits = self.dual_extractor(dual_emb, dual_data.edge_index, dual_data.batch, "dual")
@@ -219,7 +251,7 @@ class GSAT(nn.Module):
         #dual_node_att = self.sampling(dual_att_log_logits, epoch, training)
 
         #dual_node_att = F.gumbel_softmax(dual_att_log_logits, tau = 0.1 ,dim = -1)[:,0]
-        dual_node_att = self.gumbel_sigmoid(dual_att_log_logits, tau = 0.1)[:,0]
+        dual_node_att = self.gumbel_sigmoid(dual_att_log_logits, tau = 0.3)[:,0]
         dual_node_att = dual_node_att.unsqueeze(-1)
         #dual_node_att = self.sampling(dual_att_log_logits, epoch, training)
 
@@ -249,7 +281,14 @@ class GSAT(nn.Module):
             primal_edge_att = self.lift_node_att_to_edge_att(primal_node_att, primal_data.edge_index)
             old_primal_edge_att = self.lift_node_att_to_edge_att(primal_node_att, primal_data.edge_index)
 
-        if (epoch > 50):
+        # print("primal_node_att: ", primal_node_att.shape)
+        # print("primal_edge_att: ",primal_edge_att.shape)
+        # print("dual_node_att:", dual_node_att.shape)
+        # print("dual_edge_att:", dual_edge_att.shape)
+        # input("continue")
+
+
+        if (epoch > 30):
             primal_edge_att = 0.3 * dual_node_att + (1 - 0.3) * primal_edge_att
 
         primal_clf_logits = self.primal_clf(primal_data.x, primal_data.edge_index, primal_data.batch,
@@ -282,6 +321,9 @@ class GSAT(nn.Module):
         #print("final loss: ", loss)
         #input('loss')
 
+        fid_loss = self.fidelity_loss(primal_data, dual_data, primal_edge_att, dual_edge_att)
+        # print(fid_loss)
+        loss += fid_loss
 
         # for g in range(15):
         #     # 1. Get node indices in graph g
@@ -391,39 +433,39 @@ class GSAT(nn.Module):
         # fig.canvas.manager.set_window_title(f"Comb Att Epoch {epoch}")
         # plt.show()
         # plt.close()
-        if (epoch % 10 == 0):
-            ground_truth_mask = primal_data.edge_label
+        # if (epoch % 10 == 0):
+        #     ground_truth_mask = primal_data.edge_label
 
-            fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        #     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 
-            # Get binary mask as indices
-            gt_indices = torch.nonzero(ground_truth_mask == 1)  # returns tensor of shape [N, 1]
-            gt_indices = gt_indices.view(-1).cpu().numpy()     
+        #     # Get binary mask as indices
+        #     gt_indices = torch.nonzero(ground_truth_mask == 1)  # returns tensor of shape [N, 1]
+        #     gt_indices = gt_indices.view(-1).cpu().numpy()     
 
 
-            # Primal Edge Attention
-            sns.heatmap(primal_edge_att.detach().cpu().numpy().reshape(1, -1), ax=axes[0, 0], cmap='coolwarm', center=0)
-            axes[0, 0].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
-            axes[0, 0].set_title('Primal Edge Attention')
+        #     # Primal Edge Attention
+        #     sns.heatmap(primal_edge_att.detach().cpu().numpy().reshape(1, -1), ax=axes[0, 0], cmap='coolwarm', center=0)
+        #     axes[0, 0].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
+        #     axes[0, 0].set_title('Primal Edge Attention')
 
-            # Dual Node Attention
-            sns.heatmap(dual_node_att.detach().cpu().numpy().reshape(1, -1), ax=axes[0, 1], cmap='coolwarm', center=0)
-            axes[0, 1].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
-            axes[0, 1].set_title('Dual Node Attention')
+        #     # Dual Node Attention
+        #     sns.heatmap(dual_node_att.detach().cpu().numpy().reshape(1, -1), ax=axes[0, 1], cmap='coolwarm', center=0)
+        #     axes[0, 1].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
+        #     axes[0, 1].set_title('Dual Node Attention')
 
-            sns.heatmap(dual_node_att_other.detach().cpu().numpy().reshape(1, -1), ax=axes[1,0], cmap='coolwarm', center=0)
-            axes[1, 0].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
-            axes[1, 0].set_title('Dual Node Attention w/o gumbel')
+        #     sns.heatmap(dual_node_att_other.detach().cpu().numpy().reshape(1, -1), ax=axes[1,0], cmap='coolwarm', center=0)
+        #     axes[1, 0].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
+        #     axes[1, 0].set_title('Dual Node Attention w/o gumbel')
 
-            # Combined Attention
-            sns.heatmap(comb_att.detach().cpu().numpy().reshape(1, -1), ax=axes[1, 1], cmap='coolwarm', center=0)
-            axes[1, 1].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
-            axes[1, 1].set_title('Combined Attention')
+        #     # Combined Attention
+        #     sns.heatmap(comb_att.detach().cpu().numpy().reshape(1, -1), ax=axes[1, 1], cmap='coolwarm', center=0)
+        #     axes[1, 1].scatter(gt_indices, [0]*len(gt_indices), marker='x', color='green', label='Ground Truth')
+        #     axes[1, 1].set_title('Combined Attention')
 
-            # Final layout
-            plt.suptitle(f'Attention Visualizations with Ground Truth - Epoch {epoch}')
-            plt.tight_layout()
-            plt.show()
+        #     # Final layout
+        #     plt.suptitle(f'Attention Visualizations with Ground Truth - Epoch {epoch}')
+        #     plt.tight_layout()
+        #     plt.show()
 
         return primal_edge_att, loss, loss_dict, primal_clf_logits
         
@@ -699,7 +741,7 @@ class GSAT(nn.Module):
                 self.primal_scheduler.step(valid_res[main_metric_idx])
 
             r = self.primal_fix_r if self.primal_fix_r else self.get_r(self.primal_decay_interval, self.primal_decay_r, epoch, final_r=self.primal_final_r, init_r=self.primal_init_r)
-            if (r == self.primal_final_r or self.primal_fix_r) and epoch > 10 and ((valid_res[main_metric_idx] > metric_dict['metric/best_clf_valid'])
+            if (abs(r - self.primal_final_r) < 1e-4 or self.primal_fix_r) and epoch > 0 and ((valid_res[main_metric_idx] > metric_dict['metric/best_clf_valid'])
                                                                      or (valid_res[main_metric_idx] == metric_dict['metric/best_clf_valid']
                                                                          and valid_res[4] < metric_dict['metric/best_clf_valid_loss'])):
 
@@ -1069,9 +1111,12 @@ def main():
     device = torch.device(f'cuda:{cuda_id}' if cuda_id >= 0 else 'cpu')
 
     metric_dicts = []
+    random_numbers = [10, 24, 56, 3, 78, 23, 45, 60 , 100, 123, 1566]
     for random_state in range(num_seeds):
-        log_dir = data_dir / dataset_name / 'logs' / (time + '-' + dataset_name + '-' + model_name + '-seed' + str(random_state) + '-' + method_name)
-        hparam_dict, metric_dict = train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_name, method_name, device, random_state)
+        rand = random_numbers[random_state]
+        log_dir = data_dir / dataset_name / 'logs' / (time + '-' + dataset_name + '-' + model_name + '-seed' + str(rand) + '-' + method_name)
+
+        hparam_dict, metric_dict = train_gsat_one_seed(local_config, data_dir, log_dir, model_name, dataset_name, method_name, device, rand)
         metric_dicts.append(metric_dict)
 
     # alphas = [0.1, 0.3, 0.5, 0.7, 0.9]
