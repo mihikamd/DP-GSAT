@@ -93,8 +93,8 @@ def read_ba2motif_data(folder: str, prefix):
         #     input("continue to next graph")
 
         data_list.append(Data(x=x, edge_index=edge_index, y=y, node_label=dual_node_label, edge_label=dual_edge_label))
-    print(len(data_list))
-    input("continue")
+    # print(len(data_list))
+    # input("continue")
     return data_list
 
 
@@ -131,7 +131,7 @@ class SynGraphDataset_Dual(InMemoryDataset):
     def __init__(self, root, name, transform=None, pre_transform=None):
         self.name = name.lower()
         super(SynGraphDataset_Dual, self).__init__(root, transform, pre_transform)
-        self.process()
+        # self.process()
         self.data, self.slices = torch.load(self.processed_paths[0])
 
     @property

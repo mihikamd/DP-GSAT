@@ -160,12 +160,6 @@ class NSALoss(nn.Module):
             A2_pairwise = torch.cdist(z,z)    # compute pairwise dist
             
             mask = torch.triu(torch.ones_like(A1_pairwise), diagonal=1)
-
-            #mask1 = torch.triu(torch.ones_like(A1_pairwise), diagonal=1)
-            #mask2 = torch.triu(torch.ones_like(A2_pairwise), diagonal=1)
-
-            # A1_pairwise = A1_pairwise[mask1.bool()]
-            # A2_pairwise = A2_pairwise[mask2.bool()]
     
             A1_pairwise = A1_pairwise[mask.bool()]
             A2_pairwise = A2_pairwise[mask.bool()]
@@ -369,10 +363,13 @@ class LNSA_loss(nn.Module):
             k = X.shape[0]
         else:
             k = self.k
+
+        # print(f"X.shape[0]: {X.shape[0]}, k: {k}, x_dist.shape: {x_dist.shape}")
+
         values, indices = torch.topk(x_dist, k, largest=False)
         values, indices = values[:,1:], indices[:,1:]
         norm_values=values[:,-1].view(values.shape[0],1)
-        lid_X = (1/self.k)*torch.sum(torch.log10(values) - torch.log10(norm_values),axis=1) + self.eps
+        lid_X = (1/k)*torch.sum(torch.log10(values) - torch.log10(norm_values),axis=1) + self.eps
         return indices, lid_X
 
 
@@ -386,7 +383,7 @@ class LNSA_loss(nn.Module):
         nn_mask, lid_X = self.compute_neighbor_mask(X, normA1)
         z_dist = torch.cdist(Z,Z)+self.eps
         z_dist = z_dist/normA2
-        rows = torch.arange(z_dist.shape[0]).view(-1, 1).expand_as(nn_mask)
+        rows = torch.arange(nn_mask.shape[0], device=z_dist.device).view(-1, 1).expand_as(nn_mask)
         # # # Extract values
         extracted_values = z_dist[rows, nn_mask]
         norm_values=extracted_values[:,-1].view(extracted_values.shape[0],1)

@@ -26,7 +26,7 @@ GSAT_config:
   method_name: 'GSAT'
   pred_loss_coef: 1
   info_loss_coef: 1
-  epochs: 300
+  epochs: 150
   lr: 1.0e-3
 
   from_scratch: true

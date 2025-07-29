@@ -43,7 +43,8 @@ def get_data_loaders(data_dir, dataset_name, batch_size, splits, random_state, m
 
     elif dataset_name == 'mutag_dual':
         dataset = Mutag_Dual(root=data_dir / 'mutag_dual') #MANGO
-        split_idx = get_random_split_idx(dataset, splits, random_state=random_state, mutag_x=mutag_x)
+        secondary_dataset = Mutag(root=data_dir / 'mutag')
+        split_idx = get_random_split_idx(dataset, splits, random_state=random_state, mutag_x=mutag_x, secondary_dataset = secondary_dataset)
         loaders, test_set = get_loaders_and_test_set(batch_size, dataset=dataset, split_idx=split_idx) #MANGO
         train_set = dataset[split_idx['train']] #MANGO
 
@@ -104,7 +105,7 @@ def get_data_loaders(data_dir, dataset_name, batch_size, splits, random_state, m
     return loaders, test_set, x_dim, edge_attr_dim, num_class, aux_info
 
 
-def get_random_split_idx(dataset, splits, random_state=None, mutag_x=False):
+def get_random_split_idx(dataset, splits, random_state=None, mutag_x=False, secondary_dataset = None,):
     if random_state is not None:
         np.random.seed(random_state)
 
@@ -122,7 +123,14 @@ def get_random_split_idx(dataset, splits, random_state=None, mutag_x=False):
         #n_train = int(splits['train'] * len(idx))
         n_train, n_valid = int(splits['train'] * len(idx)), int(splits['valid'] * len(idx))
         train_idx, valid_idx = idx[:n_train], idx[n_train:]
+        # test1_idx = [i for i in range(len(dataset)) if (dataset[i].y.squeeze() == 0)] 
+        # test2_idx = [i for i in range(len(dataset)) if (dataset[i].edge_label.sum() > 0)] 
         test_idx = [i for i in range(len(dataset)) if (dataset[i].y.squeeze() == 0 and dataset[i].edge_label.sum() > 0)]
+        if(secondary_dataset != None):
+            test_idx = [i for i in range(len(secondary_dataset)) if (secondary_dataset[i].y.squeeze() == 0 and secondary_dataset[i].edge_label.sum() > 0)]
+        # print(test1_idx)
+        # print(test2_idx)
+        print(test_idx)
     return {'train': train_idx, 'valid': valid_idx, 'test': test_idx}
 
 
