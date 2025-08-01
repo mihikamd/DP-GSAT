@@ -45,8 +45,8 @@ def read_ba2motif_data(folder: str, prefix):
         mask = ((edge_index[0] >= 20) & (edge_index[0] < 25) & (edge_index[1] >= 20) & (edge_index[1] < 25))
         edge_label[mask] = 1.0
 
-        if graph_idx == 1:
-            print("graph 1:",  edge_index.shape[1])
+        # if graph_idx == 1:
+            # print("graph 1:",  edge_index.shape[1])
         # if graph_idx < 10:
         #     edge_att = torch.ones(edge_index.shape[1])
         #     fig, ax = plt.subplots()

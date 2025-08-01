@@ -1,0 +1,2 @@
+Best params: alpha=0.3, lambda_att=0.5, epoch =30
+Best validation accuracy: 1.0000, Best interp AUC: 0.6759

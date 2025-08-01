@@ -176,8 +176,8 @@ def rtd(X,Y, batch_size=400,n_runs = 10):
     loss = RTDLoss(dim=1, engine='ripser')
     X = X.reshape(len(X), -1)
     Y = Y.reshape(len(Y), -1)
-    print(X.shape)
-    print(Y.shape)
+    # print(X.shape)
+    # print(Y.shape)
     if batch_size > len(X):
         n_runs=1
     max_dim = 1

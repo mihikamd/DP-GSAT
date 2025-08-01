@@ -130,7 +130,7 @@ def get_random_split_idx(dataset, splits, random_state=None, mutag_x=False, seco
             test_idx = [i for i in range(len(secondary_dataset)) if (secondary_dataset[i].y.squeeze() == 0 and secondary_dataset[i].edge_label.sum() > 0)]
         # print(test1_idx)
         # print(test2_idx)
-        print(test_idx)
+        # print(test_idx)
     return {'train': train_idx, 'valid': valid_idx, 'test': test_idx}
 
 
